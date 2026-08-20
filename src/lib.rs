@@ -1,0 +1,515 @@
+//! Tab overview core. No Zellij types — the WASM adapter maps host events in.
+
+mod ansi;
+mod grid;
+mod render;
+
+pub use grid::{columns, rows};
+pub use render::{paint, Frame};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabFact {
+    pub id: usize,
+    pub position: usize,
+    pub name: String,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Left,
+    Down,
+    Up,
+    Right,
+    Confirm,
+    PreviousTab,
+    Dismiss,
+    Toggle,
+    StartHint,
+    Input(char),
+    Backspace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    None,
+    Dismiss,
+    /// Zero-based index expected by zellij-tile's `go_to_tab`.
+    Commit {
+        tab_index: u32,
+    },
+    PreviousTab,
+}
+
+#[derive(Debug, Default)]
+struct HintState {
+    labels: Vec<Option<String>>,
+    query: String,
+    jump_prefix: String,
+}
+
+#[derive(Debug, Default)]
+pub struct Overview {
+    tabs: Vec<TabFact>,
+    /// Index into `tabs` (tab-bar order).
+    cursor: usize,
+    previous_tab_id: Option<usize>,
+    hint: Option<HintState>,
+}
+
+impl Overview {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn apply_tabs(&mut self, mut tabs: Vec<TabFact>) {
+        tabs.sort_by_key(|t| t.position);
+        let cursor_id = self.selected_tab().map(|t| t.id);
+        self.tabs = tabs;
+        self.reseat_cursor(cursor_id);
+        if self.hint.is_some() {
+            self.recompute_hint_labels();
+        }
+    }
+
+    pub fn reset_cursor_to_active(&mut self) {
+        if let Some(index) = self.tabs.iter().position(|t| t.active) {
+            self.cursor = index;
+        } else {
+            self.cursor = 0;
+        }
+    }
+
+    pub fn tabs(&self) -> &[TabFact] {
+        &self.tabs
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn set_previous_tab_id(&mut self, tab_id: Option<usize>) {
+        self.previous_tab_id = tab_id;
+    }
+
+    pub fn is_previous_tab(&self, index: usize) -> bool {
+        self.tabs
+            .get(index)
+            .is_some_and(|tab| Some(tab.id) == self.previous_tab_id)
+    }
+
+    pub fn is_hinting(&self) -> bool {
+        self.hint.is_some()
+    }
+
+    pub fn visible_tabs(&self) -> Vec<&TabFact> {
+        self.tabs.iter().collect()
+    }
+
+    pub fn hint_query(&self) -> &str {
+        self.hint
+            .as_ref()
+            .map(|hint| hint.query.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn hint_jump_prefix(&self) -> &str {
+        self.hint
+            .as_ref()
+            .map(|hint| hint.jump_prefix.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn hint_label(&self, index: usize) -> Option<&str> {
+        self.hint
+            .as_ref()
+            .and_then(|hint| hint.labels.get(index))
+            .and_then(Option::as_deref)
+    }
+
+    pub fn hint_match_range(&self, index: usize) -> Option<(usize, usize)> {
+        let hint = self.hint.as_ref()?;
+        let tab = self.tabs.get(index)?;
+        title_match_range(display_name(tab), &hint.query)
+    }
+
+    pub fn decide(&mut self, key: Key) -> Action {
+        let visible_count = self.visible_tabs().len();
+        match key {
+            Key::Left => {
+                self.cursor = grid::step(self.cursor, visible_count, 0, -1);
+                Action::None
+            }
+            Key::Right => {
+                self.cursor = grid::step(self.cursor, visible_count, 0, 1);
+                Action::None
+            }
+            Key::Up => {
+                self.cursor = grid::step(self.cursor, visible_count, -1, 0);
+                Action::None
+            }
+            Key::Down => {
+                self.cursor = grid::step(self.cursor, visible_count, 1, 0);
+                Action::None
+            }
+            Key::Confirm => self.commit_cursor(),
+            Key::PreviousTab => Action::PreviousTab,
+            Key::Dismiss if self.is_hinting() => {
+                self.hint = None;
+                self.reset_cursor_to_active();
+                Action::None
+            }
+            Key::Dismiss | Key::Toggle => Action::Dismiss,
+            Key::StartHint => {
+                self.hint = Some(HintState {
+                    labels: vec![None; self.tabs.len()],
+                    query: String::new(),
+                    jump_prefix: String::new(),
+                });
+                Action::None
+            }
+            Key::Input(ch) if self.is_hinting() => self.apply_hint_input(ch),
+            Key::Backspace if self.is_hinting() => {
+                if let Some(hint) = self.hint.as_mut() {
+                    if hint.jump_prefix.is_empty() {
+                        hint.query.pop();
+                    } else {
+                        hint.jump_prefix.pop();
+                    }
+                }
+                self.recompute_hint_labels();
+                Action::None
+            }
+            Key::Input(_) | Key::Backspace => Action::None,
+        }
+    }
+
+    pub fn paint(&self, rows: usize, cols: usize) -> Frame {
+        render::paint(self, rows, cols)
+    }
+
+    fn commit_cursor(&self) -> Action {
+        match self.selected_tab() {
+            Some(tab) => Action::Commit {
+                tab_index: tab.position as u32,
+            },
+            None => Action::Dismiss,
+        }
+    }
+
+    fn reseat_cursor(&mut self, previous_id: Option<usize>) {
+        if let Some(id) = previous_id {
+            if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
+                self.cursor = index;
+                return;
+            }
+        }
+        self.reset_cursor_to_active();
+    }
+
+    fn selected_tab(&self) -> Option<&TabFact> {
+        self.tabs.get(self.cursor)
+    }
+
+    fn apply_hint_input(&mut self, ch: char) -> Action {
+        let ch = ch.to_ascii_lowercase();
+        let Some(hint) = self.hint.as_ref() else {
+            return Action::None;
+        };
+        if !hint.query.is_empty() {
+            let mut jump_prefix = hint.jump_prefix.clone();
+            jump_prefix.push(ch);
+            let label_matches: Vec<usize> = hint
+                .labels
+                .iter()
+                .enumerate()
+                .filter_map(|(index, label)| {
+                    label
+                        .as_ref()
+                        .is_some_and(|label| label.starts_with(&jump_prefix))
+                        .then_some(index)
+                })
+                .collect();
+            if label_matches.len() == 1
+                && hint.labels[label_matches[0]].as_deref() == Some(jump_prefix.as_str())
+            {
+                return self
+                    .tabs
+                    .get(label_matches[0])
+                    .map(|tab| Action::Commit {
+                        tab_index: tab.position as u32,
+                    })
+                    .unwrap_or(Action::None);
+            }
+            if !label_matches.is_empty() {
+                if let Some(hint) = self.hint.as_mut() {
+                    hint.jump_prefix = jump_prefix;
+                }
+                return Action::None;
+            }
+        }
+
+        let mut query = hint.query.clone();
+        query.push(ch);
+        let has_matches = self
+            .tabs
+            .iter()
+            .any(|tab| title_match_range(display_name(tab), &query).is_some());
+        if !has_matches {
+            return Action::None;
+        }
+        if let Some(hint) = self.hint.as_mut() {
+            hint.query = query;
+            hint.jump_prefix.clear();
+        }
+        self.recompute_hint_labels();
+        Action::None
+    }
+
+    fn recompute_hint_labels(&mut self) {
+        let Some(hint) = self.hint.as_ref() else {
+            return;
+        };
+        let query = hint.query.clone();
+        let matches: Vec<usize> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tab)| {
+                title_match_range(display_name(tab), &query)
+                    .filter(|_| !query.is_empty())
+                    .map(|_| index)
+            })
+            .collect();
+        let mut available: Vec<u8> = HINT_ALPHABET
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                let mut extended = query.clone();
+                extended.push(char::from(*candidate));
+                !self
+                    .tabs
+                    .iter()
+                    .any(|tab| title_match_range(display_name(tab), &extended).is_some())
+            })
+            .collect();
+        if available.is_empty() {
+            available.extend_from_slice(HINT_ALPHABET);
+        }
+        let generated = labels_for(matches.len(), &available);
+        if let Some(hint) = self.hint.as_mut() {
+            hint.labels = vec![None; self.tabs.len()];
+            for (index, label) in matches.into_iter().zip(generated) {
+                hint.labels[index] = Some(label);
+            }
+        }
+    }
+}
+
+const HINT_ALPHABET: &[u8] = b"asdfghjklqwertyuiopzxcvbnm";
+
+fn labels_for(count: usize, alphabet: &[u8]) -> Vec<String> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let base = alphabet.len();
+    let mut width = 1;
+    let mut capacity = base;
+    while capacity < count {
+        width += 1;
+        capacity = capacity.saturating_mul(base);
+    }
+    (0..count)
+        .map(|mut index| {
+            let mut label = vec![alphabet[0]; width];
+            for slot in label.iter_mut().rev() {
+                *slot = alphabet[index % base];
+                index /= base;
+            }
+            String::from_utf8(label).expect("hint alphabet is ASCII")
+        })
+        .collect()
+}
+
+fn title_match_range(title: &str, query: &str) -> Option<(usize, usize)> {
+    if query.is_empty() {
+        return Some((0, 0));
+    }
+    let title: Vec<char> = title.chars().map(|ch| ch.to_ascii_lowercase()).collect();
+    let query: Vec<char> = query.chars().map(|ch| ch.to_ascii_lowercase()).collect();
+    title
+        .windows(query.len())
+        .position(|window| window == query)
+        .map(|start| (start, query.len()))
+}
+
+pub fn display_name(tab: &TabFact) -> &str {
+    let name = tab.name.trim();
+    if name.is_empty() {
+        return "untitled";
+    }
+    name
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(id: usize, position: usize, name: &str, active: bool) -> TabFact {
+        TabFact {
+            id,
+            position,
+            name: name.to_owned(),
+            active,
+        }
+    }
+
+    #[test]
+    fn enter_commits_cursor_tab() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![
+            tab(10, 0, "ww", false),
+            tab(11, 1, "feat/geo-db", true),
+            tab(12, 2, "notes", false),
+        ]);
+        overview.reset_cursor_to_active();
+        assert_eq!(overview.cursor(), 1);
+        assert_eq!(
+            overview.decide(Key::Confirm),
+            Action::Commit { tab_index: 1 }
+        );
+    }
+
+    #[test]
+    fn previous_tab_delegates_to_host_history() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(10, 0, "ww", true)]);
+        assert_eq!(overview.decide(Key::PreviousTab), Action::PreviousTab);
+    }
+
+    #[test]
+    fn previous_tab_is_identified_by_stable_tab_id() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![
+            tab(10, 0, "current", true),
+            tab(11, 1, "previous", false),
+        ]);
+        overview.set_previous_tab_id(Some(11));
+        assert!(!overview.is_previous_tab(0));
+        assert!(overview.is_previous_tab(1));
+    }
+
+    #[test]
+    fn esc_dismisses_without_commit() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
+        overview.decide(Key::Right);
+        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
+    }
+
+    #[test]
+    fn cursor_follows_tab_id_after_reorder() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(10, 0, "a", true), tab(11, 1, "b", false)]);
+        overview.decide(Key::Right);
+        assert_eq!(overview.tabs()[overview.cursor()].id, 11);
+        overview.apply_tabs(vec![tab(11, 0, "b", false), tab(10, 1, "a", true)]);
+        assert_eq!(overview.tabs()[overview.cursor()].id, 11);
+        assert_eq!(overview.cursor(), 0);
+    }
+
+    #[test]
+    fn missing_cursor_tab_snaps_to_active() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(10, 0, "a", false), tab(11, 1, "b", true)]);
+        overview.decide(Key::Right);
+        overview.apply_tabs(vec![tab(10, 0, "a", false)]);
+        assert_eq!(overview.cursor(), 0);
+    }
+
+    #[test]
+    fn default_tab_name_is_preserved() {
+        let tab = tab(1, 2, "Tab #3", true);
+        assert_eq!(display_name(&tab), "Tab #3");
+    }
+
+    #[test]
+    fn search_then_tip_commits_without_confirmation() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![
+            tab(10, 0, "notes", true),
+            tab(11, 1, "Feature/Geo-DB", false),
+        ]);
+        overview.decide(Key::StartHint);
+        assert_eq!(overview.hint_label(0), None);
+        assert_eq!(overview.decide(Key::Input('g')), Action::None);
+        assert_eq!(overview.hint_query(), "g");
+        assert_eq!(overview.hint_match_range(1), Some((8, 1)));
+        assert_eq!(overview.cursor(), 0);
+        let label = overview.hint_label(1).unwrap().to_owned();
+        assert_eq!(
+            overview.decide(Key::Input(label.chars().next().unwrap())),
+            Action::Commit { tab_index: 1 }
+        );
+    }
+
+    #[test]
+    fn two_character_tips_narrow_then_commit() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..52)
+                .map(|position| {
+                    tab(
+                        position,
+                        position,
+                        &format!("tab-{position}"),
+                        position == 0,
+                    )
+                })
+                .collect(),
+        );
+        overview.decide(Key::StartHint);
+        assert_eq!(overview.decide(Key::Input('t')), Action::None);
+        let label = overview.hint_label(27).unwrap().to_owned();
+        assert_eq!(label.len(), 2);
+        let mut chars = label.chars();
+        assert_eq!(
+            overview.decide(Key::Input(chars.next().unwrap())),
+            Action::None
+        );
+        assert_eq!(
+            overview.decide(Key::Input(chars.next().unwrap())),
+            Action::Commit { tab_index: 27 }
+        );
+    }
+
+    #[test]
+    fn invalid_search_key_keeps_current_query() {
+        let mut overview = Overview::new();
+        overview.apply_tabs((0..52).map(|i| tab(i, i, "tab", i == 0)).collect());
+        overview.decide(Key::StartHint);
+        overview.decide(Key::Input('t'));
+        assert_eq!(overview.decide(Key::Input('!')), Action::None);
+        assert_eq!(overview.hint_query(), "t");
+    }
+
+    #[test]
+    fn first_hint_character_always_builds_the_query() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(0, 0, "shell", true), tab(1, 1, "notes", false)]);
+        overview.decide(Key::StartHint);
+        assert_eq!(overview.decide(Key::Input('h')), Action::None);
+        assert_eq!(overview.hint_query(), "h");
+        assert_eq!(overview.hint_match_range(0), Some((1, 1)));
+    }
+
+    #[test]
+    fn escape_cancels_hint_before_dismissing() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(10, 0, "notes", true)]);
+        overview.decide(Key::StartHint);
+        assert_eq!(overview.decide(Key::Dismiss), Action::None);
+        assert!(!overview.is_hinting());
+        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
+    }
+}
