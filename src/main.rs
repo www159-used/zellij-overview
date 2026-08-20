@@ -3,6 +3,10 @@ use std::collections::BTreeMap;
 use overview::{Action, Key, Overview, TabFact};
 use zellij_tile::prelude::*;
 
+mod floating_state;
+
+use floating_state::FloatingLayerState;
+
 const PLUGIN_NAME: &str = "overview";
 
 #[derive(Default)]
@@ -12,6 +16,7 @@ struct State {
     client_id: Option<ClientId>,
     permissions_granted: bool,
     pane_manifest: Option<PaneManifest>,
+    floating_layer: FloatingLayerState,
     /// Snap cursor to the active tab on the first TabUpdate after open.
     pending_initial_cursor: bool,
 }
@@ -64,15 +69,17 @@ impl ZellijPlugin for State {
                 true
             }
             Event::SessionUpdate(sessions, _) => {
+                let current_session = sessions.iter().find(|session| session.is_current_session);
                 let previous_tab_id = self.client_id.and_then(|client_id| {
-                    sessions
-                        .iter()
-                        .find(|session| session.is_current_session)
+                    current_session
                         .and_then(|session| session.tab_history.get(&client_id))
                         .and_then(|history| history.last())
                         .copied()
                 });
                 self.overview.set_previous_tab_id(previous_tab_id);
+                let previous_pane_was_floating =
+                    current_session.and_then(|session| self.previous_pane_was_floating(session));
+                self.floating_layer.capture(previous_pane_was_floating);
                 true
             }
             Event::Key(key) => self.handle_key(key),
@@ -115,8 +122,16 @@ impl State {
             .filter(|pane| pane.plugin_url.as_deref() == Some(own_url))
             .map(pane_id)
             .collect();
-        if overview_panes.len() > 1 {
-            let _ = hide_floating_panes(None);
+        let is_oldest_instance = overview_panes
+            .iter()
+            .filter_map(|pane_id| match pane_id {
+                PaneId::Plugin(id) => Some(*id),
+                PaneId::Terminal(_) => None,
+            })
+            .min()
+            == Some(own_id);
+        if overview_panes.len() > 1 && is_oldest_instance {
+            self.restore_floating_layer();
             for pane_id in overview_panes {
                 close_pane_with_id(pane_id);
             }
@@ -124,8 +139,31 @@ impl State {
     }
 
     fn dismiss(&self) {
-        let _ = hide_floating_panes(None);
+        self.restore_floating_layer();
         close_self();
+    }
+
+    fn restore_floating_layer(&self) {
+        if self.floating_layer.should_hide_on_close() {
+            let _ = hide_floating_panes(None);
+        }
+    }
+
+    fn previous_pane_was_floating(&self, session: &SessionInfo) -> Option<bool> {
+        let own_pane = PaneId::Plugin(self.own_plugin_id?);
+        let previous_pane = session
+            .pane_history
+            .get(&self.client_id?)?
+            .iter()
+            .rev()
+            .find(|pane_id| **pane_id != own_pane)?;
+        session
+            .panes
+            .panes
+            .values()
+            .flatten()
+            .find(|pane| pane_id(pane) == *previous_pane)
+            .map(|pane| pane.is_floating)
     }
 
     fn handle_key(&mut self, key: KeyWithModifier) -> bool {

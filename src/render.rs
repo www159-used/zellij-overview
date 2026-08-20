@@ -15,6 +15,7 @@ use crate::{
 const MATCH_COLOR: Color = Color::Rgb(255, 184, 108);
 const CARD_FOREGROUND: Color = Color::Reset;
 const CARD_BORDER: Color = Color::Rgb(90, 96, 114);
+const MATCH_BORDER: Color = Color::Rgb(80, 160, 255);
 const FOCUS_BORDER: Color = Color::Rgb(189, 147, 249);
 const TIP_FOREGROUND: Color = Color::Rgb(16, 19, 26);
 const TIP_BACKGROUND: Color = Color::Rgb(139, 233, 253);
@@ -157,7 +158,9 @@ fn render_card(
     }
     let text_area = match mode {
         LayoutMode::Framed => {
-            let border_color = if overview.cursor() == index {
+            let border_color = if candidate {
+                MATCH_BORDER
+            } else if overview.cursor() == index {
                 FOCUS_BORDER
             } else {
                 CARD_BORDER
@@ -380,7 +383,7 @@ mod tests {
         render_cards(&overview, area, &mut buffer);
         let plan = overview.layout_plan(area);
         let second = plan.cards[1].area;
-        assert_eq!(buffer[(second.x, second.y)].fg, CARD_BORDER);
+        assert_eq!(buffer[(second.x, second.y)].fg, MATCH_BORDER);
         assert_eq!(buffer[(second.x, second.y)].bg, Color::Reset);
         assert_eq!(buffer[(second.x + 1, second.y + 1)].bg, Color::Reset);
     }

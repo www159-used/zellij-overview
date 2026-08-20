@@ -1,6 +1,8 @@
 //! Tab overview core. No Zellij types — the WASM adapter maps host events in.
 
 mod ansi;
+#[cfg(test)]
+mod floating_state;
 mod grid;
 mod render;
 
