@@ -4,7 +4,7 @@ mod ansi;
 mod grid;
 mod render;
 
-pub use grid::{columns, rows};
+use ratatui::{layout::Rect, text::Line};
 pub use render::{paint, Frame};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,17 @@ pub enum Key {
     Right,
     Confirm,
     PreviousTab,
+    HalfPageDown,
+    HalfPageUp,
+    PageDown,
+    PageUp,
+    GoPrefix,
+    First,
+    Last,
+    ZPrefix,
+    AlignTop,
+    AlignBottom,
+    ToggleHelp,
     Dismiss,
     Toggle,
     StartHint,
@@ -41,6 +52,13 @@ pub enum Action {
     PreviousTab,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ScrollAlignment {
+    Top,
+    Center,
+    Bottom,
+}
+
 #[derive(Debug, Default)]
 struct HintState {
     labels: Vec<Option<String>>,
@@ -54,6 +72,11 @@ pub struct Overview {
     /// Index into `tabs` (tab-bar order).
     cursor: usize,
     previous_tab_id: Option<usize>,
+    viewport: Option<(usize, usize)>,
+    scroll_offset: usize,
+    pending_g: bool,
+    pending_z: bool,
+    show_help: bool,
     hint: Option<HintState>,
 }
 
@@ -92,6 +115,11 @@ impl Overview {
         self.previous_tab_id = tab_id;
     }
 
+    pub fn set_viewport(&mut self, rows: usize, cols: usize) {
+        self.viewport = Some((rows, cols));
+        self.ensure_index_visible(self.cursor);
+    }
+
     pub fn is_previous_tab(&self, index: usize) -> bool {
         self.tabs
             .get(index)
@@ -100,6 +128,10 @@ impl Overview {
 
     pub fn is_hinting(&self) -> bool {
         self.hint.is_some()
+    }
+
+    pub fn is_help_visible(&self) -> bool {
+        self.show_help
     }
 
     pub fn visible_tabs(&self) -> Vec<&TabFact> {
@@ -134,22 +166,96 @@ impl Overview {
     }
 
     pub fn decide(&mut self, key: Key) -> Action {
-        let visible_count = self.visible_tabs().len();
-        match key {
+        if self.show_help {
+            return match key {
+                Key::ToggleHelp | Key::Dismiss => {
+                    self.show_help = false;
+                    Action::None
+                }
+                _ => Action::None,
+            };
+        }
+        let plan = self.current_layout_plan();
+        let completes_gg = key == Key::GoPrefix && self.pending_g;
+        if key != Key::GoPrefix {
+            self.pending_g = false;
+        }
+        let z_was_pending = self.pending_z;
+        if !matches!(key, Key::ZPrefix | Key::AlignTop | Key::AlignBottom) {
+            self.pending_z = false;
+        }
+        let action = match key {
             Key::Left => {
-                self.cursor = grid::step(self.cursor, visible_count, 0, -1);
+                self.cursor = plan.horizontal_neighbor(self.cursor, -1);
                 Action::None
             }
             Key::Right => {
-                self.cursor = grid::step(self.cursor, visible_count, 0, 1);
+                self.cursor = plan.horizontal_neighbor(self.cursor, 1);
                 Action::None
             }
             Key::Up => {
-                self.cursor = grid::step(self.cursor, visible_count, -1, 0);
+                self.cursor = plan.vertical_neighbor(self.cursor, -1);
                 Action::None
             }
             Key::Down => {
-                self.cursor = grid::step(self.cursor, visible_count, 1, 0);
+                self.cursor = plan.vertical_neighbor(self.cursor, 1);
+                Action::None
+            }
+            Key::HalfPageDown => {
+                self.move_cursor_by((plan.visible_count / 2).max(1) as isize);
+                Action::None
+            }
+            Key::HalfPageUp => {
+                self.move_cursor_by(-((plan.visible_count / 2).max(1) as isize));
+                Action::None
+            }
+            Key::PageDown => {
+                self.move_cursor_by(plan.visible_count.max(1) as isize);
+                Action::None
+            }
+            Key::PageUp => {
+                self.move_cursor_by(-(plan.visible_count.max(1) as isize));
+                Action::None
+            }
+            Key::GoPrefix if completes_gg => {
+                self.pending_g = false;
+                self.cursor = 0;
+                Action::None
+            }
+            Key::GoPrefix => {
+                self.pending_g = true;
+                Action::None
+            }
+            Key::First => {
+                self.cursor = 0;
+                Action::None
+            }
+            Key::Last => {
+                self.cursor = self.tabs.len().saturating_sub(1);
+                Action::None
+            }
+            Key::ZPrefix if z_was_pending => {
+                self.pending_z = false;
+                self.align_cursor(ScrollAlignment::Center);
+                Action::None
+            }
+            Key::ZPrefix => {
+                self.pending_z = true;
+                Action::None
+            }
+            Key::AlignTop if z_was_pending => {
+                self.pending_z = false;
+                self.align_cursor(ScrollAlignment::Top);
+                Action::None
+            }
+            Key::AlignBottom if z_was_pending => {
+                self.pending_z = false;
+                self.align_cursor(ScrollAlignment::Bottom);
+                Action::None
+            }
+            Key::AlignTop | Key::AlignBottom => Action::None,
+            Key::ToggleHelp => {
+                self.show_help = true;
                 Action::None
             }
             Key::Confirm => self.commit_cursor(),
@@ -178,10 +284,37 @@ impl Overview {
                     }
                 }
                 self.recompute_hint_labels();
+                let reveal_index = self
+                    .hint
+                    .as_ref()
+                    .and_then(|hint| hint.labels.iter().position(Option::is_some))
+                    .unwrap_or(self.cursor);
+                self.ensure_index_visible(reveal_index);
                 Action::None
             }
             Key::Input(_) | Key::Backspace => Action::None,
+        };
+        if matches!(
+            key,
+            Key::Left
+                | Key::Right
+                | Key::Up
+                | Key::Down
+                | Key::HalfPageDown
+                | Key::HalfPageUp
+                | Key::PageDown
+                | Key::PageUp
+                | Key::GoPrefix
+                | Key::First
+                | Key::Last
+                | Key::ZPrefix
+                | Key::AlignTop
+                | Key::AlignBottom
+                | Key::Dismiss
+        ) {
+            self.ensure_index_visible(self.cursor);
         }
+        action
     }
 
     pub fn paint(&self, rows: usize, cols: usize) -> Frame {
@@ -195,6 +328,69 @@ impl Overview {
             },
             None => Action::Dismiss,
         }
+    }
+
+    pub(crate) fn layout_plan(&self, area: Rect) -> grid::LayoutPlan {
+        grid::LayoutPlan::calculate(&self.item_widths(), area, self.scroll_offset)
+    }
+
+    fn current_layout_plan(&self) -> grid::LayoutPlan {
+        let (rows, cols) = self.viewport.unwrap_or((1, 1));
+        self.layout_plan(Rect::new(
+            0,
+            0,
+            cols.min(u16::MAX as usize) as u16,
+            content_rows(rows).min(u16::MAX as usize) as u16,
+        ))
+    }
+
+    fn ensure_index_visible(&mut self, index: usize) {
+        let plan = self.current_layout_plan();
+        if plan.mode != grid::LayoutMode::Scroll || plan.visible_count == 0 {
+            self.scroll_offset = 0;
+            return;
+        }
+        if index < plan.first_visible {
+            self.scroll_offset = index;
+        } else if index >= plan.visible_end() {
+            self.scroll_offset = index + 1 - plan.visible_count;
+        }
+    }
+
+    fn move_cursor_by(&mut self, delta: isize) {
+        let last = self.tabs.len().saturating_sub(1) as isize;
+        self.cursor = (self.cursor as isize + delta).clamp(0, last) as usize;
+    }
+
+    fn align_cursor(&mut self, alignment: ScrollAlignment) {
+        if self.current_layout_plan().mode != grid::LayoutMode::Scroll {
+            return;
+        }
+        let visible_capacity = self
+            .viewport
+            .map_or(1, |(rows, _)| content_rows(rows))
+            .max(1);
+        self.scroll_offset = match alignment {
+            ScrollAlignment::Top => self.cursor,
+            ScrollAlignment::Center => self.cursor.saturating_sub(visible_capacity / 2),
+            ScrollAlignment::Bottom => self
+                .cursor
+                .saturating_add(1)
+                .saturating_sub(visible_capacity),
+        };
+    }
+
+    fn item_widths(&self) -> Vec<usize> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let title_width = Line::from(display_name(tab)).width();
+                let active_width = usize::from(tab.active) * 2;
+                let previous_width = usize::from(self.is_previous_tab(index)) * 4;
+                title_width + active_width + previous_width + 2
+            })
+            .collect()
     }
 
     fn reseat_cursor(&mut self, previous_id: Option<usize>) {
@@ -263,6 +459,13 @@ impl Overview {
             hint.jump_prefix.clear();
         }
         self.recompute_hint_labels();
+        if let Some(first_match) = self
+            .hint
+            .as_ref()
+            .and_then(|hint| hint.labels.iter().position(Option::is_some))
+        {
+            self.ensure_index_visible(first_match);
+        }
         Action::None
     }
 
@@ -303,6 +506,14 @@ impl Overview {
                 hint.labels[index] = Some(label);
             }
         }
+    }
+}
+
+pub(crate) fn content_rows(rows: usize) -> usize {
+    if rows >= 3 {
+        rows - 1
+    } else {
+        rows
     }
 }
 
@@ -397,6 +608,167 @@ mod tests {
         overview.set_previous_tab_id(Some(11));
         assert!(!overview.is_previous_tab(0));
         assert!(overview.is_previous_tab(1));
+    }
+
+    #[test]
+    fn navigation_uses_the_rendered_responsive_grid() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..8)
+                .map(|position| {
+                    tab(
+                        position,
+                        position,
+                        &format!("tab-{position}"),
+                        position == 0,
+                    )
+                })
+                .collect(),
+        );
+        overview.set_viewport(7, 80);
+        overview.decide(Key::Down);
+        assert_eq!(overview.cursor(), 1);
+    }
+
+    #[test]
+    fn scrolling_keeps_the_moved_cursor_visible() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..20)
+                .map(|position| {
+                    tab(
+                        position,
+                        position,
+                        &format!("tab-{position}"),
+                        position == 0,
+                    )
+                })
+                .collect(),
+        );
+        overview.set_viewport(6, 12);
+        for _ in 0..5 {
+            overview.decide(Key::Down);
+        }
+        let plan = overview.current_layout_plan();
+        assert_eq!(overview.cursor(), 5);
+        assert_eq!(plan.first_visible, 1);
+        assert!(overview.cursor() < plan.visible_end());
+    }
+
+    #[test]
+    fn vim_page_keys_scroll_by_half_and_full_viewports() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..20)
+                .map(|position| {
+                    tab(
+                        position,
+                        position,
+                        &format!("tab-{position}"),
+                        position == 0,
+                    )
+                })
+                .collect(),
+        );
+        overview.set_viewport(6, 12);
+        overview.decide(Key::HalfPageDown);
+        assert_eq!(overview.cursor(), 2);
+        overview.decide(Key::PageDown);
+        assert_eq!(overview.cursor(), 7);
+        overview.decide(Key::HalfPageUp);
+        assert_eq!(overview.cursor(), 5);
+        overview.decide(Key::PageUp);
+        assert_eq!(overview.cursor(), 0);
+    }
+
+    #[test]
+    fn vim_gg_and_uppercase_g_jump_to_the_ends() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..20)
+                .map(|position| {
+                    tab(
+                        position,
+                        position,
+                        &format!("tab-{position}"),
+                        position == 0,
+                    )
+                })
+                .collect(),
+        );
+        overview.decide(Key::Last);
+        assert_eq!(overview.cursor(), 19);
+        overview.decide(Key::GoPrefix);
+        overview.decide(Key::GoPrefix);
+        assert_eq!(overview.cursor(), 0);
+    }
+
+    #[test]
+    fn vim_z_commands_align_the_cursor_in_the_scroll_viewport() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..20)
+                .map(|position| {
+                    tab(
+                        position,
+                        position,
+                        &format!("tab-{position}"),
+                        position == 0,
+                    )
+                })
+                .collect(),
+        );
+        overview.set_viewport(6, 12);
+        overview.decide(Key::PageDown);
+        overview.decide(Key::PageDown);
+        assert_eq!(overview.cursor(), 10);
+
+        overview.decide(Key::ZPrefix);
+        overview.decide(Key::AlignTop);
+        assert_eq!(overview.current_layout_plan().first_visible, 10);
+
+        overview.decide(Key::ZPrefix);
+        overview.decide(Key::ZPrefix);
+        assert_eq!(overview.current_layout_plan().first_visible, 8);
+
+        overview.decide(Key::ZPrefix);
+        overview.decide(Key::AlignBottom);
+        assert_eq!(overview.current_layout_plan().first_visible, 6);
+    }
+
+    #[test]
+    fn help_overlay_is_closed_before_the_overview() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
+        assert_eq!(overview.decide(Key::ToggleHelp), Action::None);
+        assert!(overview.is_help_visible());
+        assert_eq!(overview.decide(Key::Dismiss), Action::None);
+        assert!(!overview.is_help_visible());
+        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
+    }
+
+    #[test]
+    fn flash_reveals_an_offscreen_match_without_moving_cursor() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..20)
+                .map(|position| {
+                    let name = if position == 19 {
+                        "zebra".to_owned()
+                    } else {
+                        format!("tab-{position}")
+                    };
+                    tab(position, position, &name, position == 0)
+                })
+                .collect(),
+        );
+        overview.set_viewport(6, 12);
+        overview.decide(Key::StartHint);
+        overview.decide(Key::Input('z'));
+        let plan = overview.current_layout_plan();
+        assert_eq!(overview.cursor(), 0);
+        assert_eq!(plan.first_visible, 15);
+        assert_eq!(overview.hint_label(19), Some("a"));
     }
 
     #[test]

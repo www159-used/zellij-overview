@@ -81,6 +81,7 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        self.overview.set_viewport(rows, cols);
         let frame = self.overview.paint(rows, cols);
         for line in frame.lines {
             println!("{line}");
@@ -176,10 +177,21 @@ fn map_key(key: &KeyWithModifier, hinting: bool) -> Option<Key> {
             BareKey::Down => Some(Key::Down),
             BareKey::Up => Some(Key::Up),
             BareKey::Right => Some(Key::Right),
-            BareKey::Enter => Some(Key::Confirm),
+            BareKey::PageDown => Some(Key::PageDown),
+            BareKey::PageUp => Some(Key::PageUp),
+            BareKey::Home if !hinting => Some(Key::First),
+            BareKey::End if !hinting => Some(Key::Last),
+            BareKey::Enter if !hinting => Some(Key::Confirm),
             BareKey::Esc => Some(Key::Dismiss),
             BareKey::Backspace if hinting => Some(Key::Backspace),
             BareKey::Char('s') if !hinting => Some(Key::StartHint),
+            BareKey::Char(c) if hinting => Some(Key::Input(c)),
+            BareKey::Char('z') => Some(Key::ZPrefix),
+            BareKey::Char('t') => Some(Key::AlignTop),
+            BareKey::Char('b') => Some(Key::AlignBottom),
+            BareKey::Char('g') => Some(Key::GoPrefix),
+            BareKey::Char('G') => Some(Key::Last),
+            BareKey::Char('?') => Some(Key::ToggleHelp),
             BareKey::Char('q') => Some(Key::Dismiss),
             BareKey::Char('h') => Some(Key::Left),
             BareKey::Char('j') => Some(Key::Down),
@@ -187,7 +199,15 @@ fn map_key(key: &KeyWithModifier, hinting: bool) -> Option<Key> {
             BareKey::Char('l') => Some(Key::Right),
             BareKey::Char('e') => Some(Key::Confirm),
             BareKey::Char('-') => Some(Key::PreviousTab),
-            BareKey::Char(c) if hinting => Some(Key::Input(c)),
+            _ => None,
+        };
+    }
+    if !hinting && key.has_modifiers(&[KeyModifier::Ctrl]) {
+        return match key.bare_key {
+            BareKey::Char('d') => Some(Key::HalfPageDown),
+            BareKey::Char('u') => Some(Key::HalfPageUp),
+            BareKey::Char('f') => Some(Key::PageDown),
+            BareKey::Char('b') => Some(Key::PageUp),
             _ => None,
         };
     }

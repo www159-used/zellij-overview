@@ -6,7 +6,11 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-use crate::{columns, display_name, Overview, TabFact};
+use crate::{
+    display_name,
+    grid::{LayoutMode, LayoutPlan},
+    Overview, TabFact,
+};
 
 const MATCH_COLOR: Color = Color::Rgb(255, 184, 108);
 const CARD_FOREGROUND: Color = Color::Reset;
@@ -33,11 +37,18 @@ pub fn paint(overview: &Overview, rows: usize, cols: usize) -> Frame {
         rows.min(u16::MAX as usize) as u16,
     );
     let mut buffer = Buffer::empty(area);
-    let [content, footer] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let (content, footer) = if rows >= 3 {
+        let [content, footer] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+        (content, Some(footer))
+    } else {
+        (area, None)
+    };
 
     render_cards(overview, content, &mut buffer);
-    render_footer(overview, footer, &mut buffer);
+    if let Some(footer) = footer {
+        render_footer(overview, footer, &mut buffer);
+    }
 
     Frame {
         lines: crate::ansi::encode_lines(&buffer),
@@ -45,55 +56,94 @@ pub fn paint(overview: &Overview, rows: usize, cols: usize) -> Frame {
 }
 
 fn render_cards(overview: &Overview, area: Rect, buffer: &mut Buffer) {
-    let tabs = overview.visible_tabs();
+    if overview.is_help_visible() {
+        render_help(area, buffer);
+        return;
+    }
+    let tabs = overview.tabs();
     if tabs.is_empty() {
         Paragraph::new("no tabs")
             .style(Style::default().fg(Color::DarkGray))
             .render(area, buffer);
         return;
     }
-    if area.height < 3 || area.width < 3 {
+    if area.height == 0 || area.width == 0 {
         return;
     }
 
-    let grid_cols = columns(tabs.len());
-    let grid_rows = crate::rows(tabs.len());
-    let row_constraints = vec![Constraint::Ratio(1, grid_rows as u32); grid_rows];
-    let row_areas = Layout::vertical(row_constraints).split(area);
-
-    for (row, row_area) in row_areas.iter().enumerate() {
-        let col_constraints = vec![Constraint::Ratio(1, grid_cols as u32); grid_cols];
-        let col_areas = Layout::horizontal(col_constraints).split(*row_area);
-        for (col, card_area) in col_areas.iter().enumerate() {
-            let index = row * grid_cols + col;
-            let Some(tab) = tabs.get(index) else {
-                continue;
-            };
-            render_card(overview, index, tab, *card_area, buffer);
-        }
+    let plan = overview.layout_plan(area);
+    for card in &plan.cards {
+        render_card(
+            overview,
+            card.index,
+            &tabs[card.index],
+            card.area,
+            plan.mode,
+            buffer,
+        );
     }
+    render_scroll_indicators(&plan, tabs.len(), area, buffer);
 }
 
-fn render_card(overview: &Overview, index: usize, tab: &TabFact, area: Rect, buffer: &mut Buffer) {
-    if area.width < 3 || area.height < 3 {
+fn render_help(area: Rect, buffer: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let block = Block::default()
+        .title(" help ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(FOCUS_BORDER));
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    let lines = vec![
+        Line::from("h/j/k/l, arrows  move"),
+        Line::from("Ctrl+d/u           half page down/up"),
+        Line::from("Ctrl+f/b, PgDn/Up  full page down/up"),
+        Line::from("gg / G             first / last tab"),
+        Line::from("zt / zz / zb       align top / center / bottom"),
+        Line::from("s                   Flash search"),
+        Line::from("e / Enter           go to selected tab"),
+        Line::from("-                   previous tab"),
+        Line::from("q / Esc             back"),
+        Line::from("?                   close help"),
+    ];
+    Paragraph::new(lines).render(inner, buffer);
+}
+
+fn render_card(
+    overview: &Overview,
+    index: usize,
+    tab: &TabFact,
+    area: Rect,
+    mode: LayoutMode,
+    buffer: &mut Buffer,
+) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
 
     let match_range = overview.hint_match_range(index);
     let candidate = match_range.is_some() && !overview.hint_query().is_empty();
-    let border_color = if overview.cursor() == index {
-        FOCUS_BORDER
-    } else {
-        CARD_BORDER
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
-    let inner = block.inner(area);
-    block.render(area, buffer);
-    buffer.set_style(inner, Style::default().fg(CARD_FOREGROUND).bg(Color::Reset));
-
     let mut spans = Vec::new();
+    if mode != LayoutMode::Framed && overview.cursor() == index {
+        spans.push(Span::styled(
+            "› ",
+            Style::default()
+                .fg(FOCUS_BORDER)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if tab.active {
+        spans.push(Span::styled("● ", Style::default().fg(FOCUS_BORDER)));
+    }
+    if overview.is_previous_tab(index) {
+        spans.push(Span::styled(
+            "[-] ",
+            Style::default()
+                .fg(TIP_BACKGROUND)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if overview.is_hinting() {
         spans.extend(highlighted_title(
             display_name(tab),
@@ -104,26 +154,55 @@ fn render_card(overview: &Overview, index: usize, tab: &TabFact, area: Rect, buf
     } else {
         spans.push(Span::raw(display_name(tab)));
     }
-    if overview.is_previous_tab(index) {
-        spans.push(Span::styled(
-            " [-]",
-            Style::default()
-                .fg(TIP_BACKGROUND)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-    if tab.active {
-        spans.push(Span::styled(" ●", Style::default().fg(FOCUS_BORDER)));
-    }
-    let text_area = Rect::new(
-        area.x.saturating_add(1),
-        area.y.saturating_add(area.height / 2),
-        area.width.saturating_sub(2),
-        1,
-    );
+    let text_area = match mode {
+        LayoutMode::Framed => {
+            let border_color = if overview.cursor() == index {
+                FOCUS_BORDER
+            } else {
+                CARD_BORDER
+            };
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color));
+            let inner = block.inner(area);
+            block.render(area, buffer);
+            buffer.set_style(inner, Style::default().fg(CARD_FOREGROUND).bg(Color::Reset));
+            Rect::new(
+                area.x.saturating_add(1),
+                area.y.saturating_add(area.height / 2),
+                area.width.saturating_sub(2),
+                1,
+            )
+        }
+        LayoutMode::Compact => Rect::new(
+            area.x,
+            area.y.saturating_add(area.height / 2),
+            area.width,
+            1,
+        ),
+        LayoutMode::Scroll => area,
+    };
     Paragraph::new(Line::from(spans))
-        .alignment(Alignment::Center)
+        .alignment(if mode == LayoutMode::Scroll {
+            Alignment::Left
+        } else {
+            Alignment::Center
+        })
         .render(text_area, buffer);
+}
+
+fn render_scroll_indicators(plan: &LayoutPlan, tab_count: usize, area: Rect, buffer: &mut Buffer) {
+    if plan.mode != LayoutMode::Scroll || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let style = Style::default().fg(TIP_BACKGROUND);
+    let x = area.right().saturating_sub(1);
+    if plan.first_visible > 0 {
+        buffer.set_string(x, area.y, "↑", style);
+    }
+    if plan.visible_end() < tab_count {
+        buffer.set_string(x, area.bottom().saturating_sub(1), "↓", style);
+    }
 }
 
 fn highlighted_title<'a>(
@@ -174,7 +253,9 @@ fn hint_badge<'a>(label: &'a str, prefix_len: usize) -> Vec<Span<'a>> {
 }
 
 fn render_footer(overview: &Overview, area: Rect, buffer: &mut Buffer) {
-    let line = if overview.is_hinting() {
+    let line = if overview.is_help_visible() {
+        Line::from("? / q / Esc close help")
+    } else if overview.is_hinting() {
         Line::from(vec![
             Span::styled(
                 " FLASH ",
@@ -194,11 +275,7 @@ fn render_footer(overview: &Overview, area: Rect, buffer: &mut Buffer) {
             Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
         ])
     } else {
-        Line::from(vec![
-            Span::raw("hjkl/arrows move   "),
-            Span::raw("s"),
-            Span::raw(" flash   - previous   e/Enter go   q/Esc back"),
-        ])
+        Line::from("hjkl move   s search   e go   - prev   q back   ? help")
     };
     Paragraph::new(line).render(area, buffer);
 }
@@ -254,10 +331,11 @@ mod tests {
         let area = Rect::new(0, 0, 40, 11);
         let mut buffer = Buffer::empty(area);
         render_cards(&overview, area, &mut buffer);
-        assert_eq!(buffer[(20, 0)].fg, CARD_BORDER);
-        assert_eq!(buffer[(20, 0)].bg, Color::Reset);
-        assert_eq!(buffer[(21, 1)].bg, Color::Reset);
-        assert_eq!(buffer[(24, 5)].bg, Color::Reset);
+        let plan = overview.layout_plan(area);
+        let second = plan.cards[1].area;
+        assert_eq!(buffer[(second.x, second.y)].fg, CARD_BORDER);
+        assert_eq!(buffer[(second.x, second.y)].bg, Color::Reset);
+        assert_eq!(buffer[(second.x + 1, second.y + 1)].bg, Color::Reset);
     }
 
     #[test]
@@ -272,5 +350,96 @@ mod tests {
     fn narrow_frames_do_not_panic() {
         assert_eq!(paint(&overview(), 1, 1).lines.len(), 1);
         assert_eq!(paint(&overview(), 2, 3).lines.len(), 2);
+    }
+
+    #[test]
+    fn short_wide_frames_keep_every_card_visible() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..8)
+                .map(|position| TabFact {
+                    id: position,
+                    position,
+                    name: format!("tab-{position}"),
+                    active: position == 0,
+                })
+                .collect(),
+        );
+        let joined = paint(&overview, 7, 80).lines.join("\n");
+        for position in 0..8 {
+            assert!(joined.contains(&format!("tab-{position}")));
+        }
+    }
+
+    #[test]
+    fn card_rows_have_identical_dimensions() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..20)
+                .map(|position| TabFact {
+                    id: position,
+                    position,
+                    name: format!("tab-{position}"),
+                    active: position == 0,
+                })
+                .collect(),
+        );
+        let plan = overview.layout_plan(Rect::new(0, 0, 81, 19));
+        assert_eq!(plan.cards.len(), 20);
+        assert!(plan
+            .cards
+            .iter()
+            .all(|card| card.area.height == plan.cards[0].area.height));
+        assert!(plan
+            .cards
+            .iter()
+            .any(|card| card.area.width != plan.cards[0].area.width));
+    }
+
+    #[test]
+    fn compact_mode_drops_card_borders() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..12)
+                .map(|position| TabFact {
+                    id: position,
+                    position,
+                    name: format!("tab-{position}"),
+                    active: position == 0,
+                })
+                .collect(),
+        );
+        let joined = paint(&overview, 7, 50).lines.join("\n");
+        assert!(!joined.contains('┌'));
+        assert!(joined.contains("tab-"));
+    }
+
+    #[test]
+    fn scroll_mode_shows_more_indicator() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..20)
+                .map(|position| TabFact {
+                    id: position,
+                    position,
+                    name: format!("tab-{position}"),
+                    active: position == 0,
+                })
+                .collect(),
+        );
+        let joined = paint(&overview, 6, 12).lines.join("\n");
+        assert!(joined.contains('↓'));
+        assert!(joined.contains("tab-0"));
+        assert!(!joined.contains("tab-19"));
+    }
+
+    #[test]
+    fn help_overlay_contains_advanced_shortcuts() {
+        let mut overview = overview();
+        overview.decide(Key::ToggleHelp);
+        let joined = paint(&overview, 14, 50).lines.join("\n");
+        assert!(joined.contains("Ctrl+d/u"));
+        assert!(joined.contains("zt / zz / zb"));
+        assert!(joined.contains("? / q / Esc close help"));
     }
 }

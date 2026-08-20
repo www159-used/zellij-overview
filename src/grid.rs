@@ -1,111 +1,264 @@
-/// Column count for the tab card grid.
-///
-/// 1–4 tabs stay on 2 columns so a left/right split remains readable.
-/// 5–9 use 3; 10+ use 4. Never 5 — mosaics collapse into unreadable stripes.
-pub fn columns(tab_count: usize) -> usize {
-    match tab_count {
-        0 => 1,
-        1..=4 => 2,
-        5..=9 => 3,
-        _ => 4,
-    }
+use ratatui::layout::Rect;
+
+const FRAMED_CARD_HEIGHT: usize = 3;
+const FRAMED_MIN_WIDTH: usize = 6;
+const COMPACT_CARD_HEIGHT: usize = 1;
+const COMPACT_MIN_WIDTH: usize = 4;
+const MAX_ROW_STRETCH: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutMode {
+    Framed,
+    Compact,
+    Scroll,
 }
 
-pub fn rows(tab_count: usize) -> usize {
-    let cols = columns(tab_count);
-    tab_count.div_ceil(cols)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardPlacement {
+    pub index: usize,
+    pub row: usize,
+    pub area: Rect,
 }
 
-/// Index of the card at `(row, col)`, if that cell is occupied.
-pub fn index_at(row: usize, col: usize, tab_count: usize) -> Option<usize> {
-    let cols = columns(tab_count);
-    let index = row.saturating_mul(cols).saturating_add(col);
-    if index < tab_count {
-        Some(index)
-    } else {
-        None
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutPlan {
+    pub mode: LayoutMode,
+    pub columns: usize,
+    pub total_rows: usize,
+    pub tab_count: usize,
+    pub first_visible: usize,
+    pub visible_count: usize,
+    pub cards: Vec<CardPlacement>,
 }
 
-/// Move the cursor on the grid. Empty cells are skipped by landing on the
-/// last occupied cell of that row, or wrapping to the other side.
-pub fn step(cursor: usize, tab_count: usize, drow: isize, dcol: isize) -> usize {
-    if tab_count == 0 {
-        return 0;
-    }
-    let cols = columns(tab_count) as isize;
-    let rows = rows(tab_count) as isize;
-    let cursor = cursor.min(tab_count - 1);
-    let row = (cursor as isize) / cols;
-    let col = (cursor as isize) % cols;
-
-    if dcol != 0 {
-        let next = cursor as isize + dcol;
-        return next.rem_euclid(tab_count as isize) as usize;
-    }
-    if rows == 1 {
-        let next = cursor as isize + drow;
-        return next.rem_euclid(tab_count as isize) as usize;
-    }
-
-    let mut new_row = (row + drow).rem_euclid(rows);
-    let new_col = col;
-    if let Some(index) = index_at(new_row as usize, new_col as usize, tab_count) {
-        return index;
-    }
-    // empty cell: last occupied in this row, else keep wrapping rows
-    for _ in 0..rows {
-        let start = (new_row as usize) * (cols as usize);
-        if start < tab_count {
-            return tab_count - 1;
+impl LayoutPlan {
+    pub fn calculate(item_widths: &[usize], area: Rect, scroll_offset: usize) -> Self {
+        if item_widths.is_empty() || area.width == 0 || area.height == 0 {
+            return Self::empty();
         }
-        new_row = (new_row + drow).rem_euclid(rows);
+        if let Some(plan) = flow_plan(
+            LayoutMode::Framed,
+            item_widths,
+            area,
+            FRAMED_CARD_HEIGHT,
+            FRAMED_MIN_WIDTH,
+            2,
+        ) {
+            return plan;
+        }
+        if let Some(plan) = flow_plan(
+            LayoutMode::Compact,
+            item_widths,
+            area,
+            COMPACT_CARD_HEIGHT,
+            COMPACT_MIN_WIDTH,
+            0,
+        ) {
+            return plan;
+        }
+        scroll_plan(item_widths.len(), area, scroll_offset)
     }
-    cursor
+
+    pub fn visible_end(&self) -> usize {
+        self.first_visible.saturating_add(self.visible_count)
+    }
+
+    pub fn horizontal_neighbor(&self, index: usize, direction: isize) -> usize {
+        if self.tab_count == 0 {
+            return 0;
+        }
+        (index as isize + direction).rem_euclid(self.tab_count as isize) as usize
+    }
+
+    pub fn vertical_neighbor(&self, index: usize, direction: isize) -> usize {
+        if self.tab_count == 0 {
+            return 0;
+        }
+        if self.mode == LayoutMode::Scroll || self.total_rows == 1 {
+            return self.horizontal_neighbor(index, direction);
+        }
+        let Some(current) = self.cards.iter().find(|card| card.index == index) else {
+            return index.min(self.tab_count - 1);
+        };
+        let target_row =
+            (current.row as isize + direction).rem_euclid(self.total_rows as isize) as usize;
+        let current_center = center_x(current.area);
+        self.cards
+            .iter()
+            .filter(|card| card.row == target_row)
+            .min_by_key(|card| center_x(card.area).abs_diff(current_center))
+            .map_or(index, |card| card.index)
+    }
+
+    fn empty() -> Self {
+        Self {
+            mode: LayoutMode::Compact,
+            columns: 1,
+            total_rows: 0,
+            tab_count: 0,
+            first_visible: 0,
+            visible_count: 0,
+            cards: Vec::new(),
+        }
+    }
+}
+
+fn flow_plan(
+    mode: LayoutMode,
+    item_widths: &[usize],
+    area: Rect,
+    card_height: usize,
+    minimum_width: usize,
+    frame_width: usize,
+) -> Option<LayoutPlan> {
+    let available_width = usize::from(area.width);
+    if available_width < minimum_width {
+        return None;
+    }
+    let widths: Vec<usize> = item_widths
+        .iter()
+        .map(|width| {
+            width
+                .saturating_add(frame_width)
+                .clamp(minimum_width, available_width)
+        })
+        .collect();
+    let rows = wrap_rows(&widths, available_width);
+    if rows.len().saturating_mul(card_height) > usize::from(area.height) {
+        return None;
+    }
+
+    let grid_height = rows.len() * card_height;
+    let origin_y = usize::from(area.y) + (usize::from(area.height) - grid_height) / 2;
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(1);
+    let mut cards = Vec::with_capacity(item_widths.len());
+
+    for (row_index, row) in rows.iter().enumerate() {
+        let row_width: usize = row.iter().map(|(_, width)| *width).sum();
+        let stretch = ((available_width - row_width) / row.len()).min(MAX_ROW_STRETCH);
+        let stretched_width = row_width + stretch * row.len();
+        let mut x = usize::from(area.x) + (available_width - stretched_width) / 2;
+        for (index, width) in row {
+            let width = width + stretch;
+            cards.push(CardPlacement {
+                index: *index,
+                row: row_index,
+                area: Rect::new(
+                    x as u16,
+                    (origin_y + row_index * card_height) as u16,
+                    width as u16,
+                    card_height as u16,
+                ),
+            });
+            x += width;
+        }
+    }
+
+    Some(LayoutPlan {
+        mode,
+        columns,
+        total_rows: rows.len(),
+        tab_count: item_widths.len(),
+        first_visible: 0,
+        visible_count: item_widths.len(),
+        cards,
+    })
+}
+
+fn wrap_rows(widths: &[usize], available_width: usize) -> Vec<Vec<(usize, usize)>> {
+    let mut rows: Vec<Vec<(usize, usize)>> = vec![Vec::new()];
+    let mut used_width = 0;
+    for (index, width) in widths.iter().copied().enumerate() {
+        if used_width > 0 && used_width + width > available_width {
+            rows.push(Vec::new());
+            used_width = 0;
+        }
+        rows.last_mut()
+            .expect("flow layout always has a row")
+            .push((index, width));
+        used_width += width;
+    }
+    rows
+}
+
+fn scroll_plan(tab_count: usize, area: Rect, scroll_offset: usize) -> LayoutPlan {
+    let first_visible = scroll_offset.min(tab_count.saturating_sub(1));
+    let visible_count = usize::from(area.height).min(tab_count - first_visible);
+    let cards = (0..visible_count)
+        .map(|visible_index| CardPlacement {
+            index: first_visible + visible_index,
+            row: first_visible + visible_index,
+            area: Rect::new(area.x, area.y + visible_index as u16, area.width, 1),
+        })
+        .collect();
+
+    LayoutPlan {
+        mode: LayoutMode::Scroll,
+        columns: 1,
+        total_rows: tab_count,
+        tab_count,
+        first_visible,
+        visible_count,
+        cards,
+    }
+}
+
+fn center_x(area: Rect) -> usize {
+    usize::from(area.x) * 2 + usize::from(area.width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn column_policy() {
-        assert_eq!(columns(1), 2);
-        assert_eq!(columns(4), 2);
-        assert_eq!(columns(5), 3);
-        assert_eq!(columns(9), 3);
-        assert_eq!(columns(10), 4);
-        assert_eq!(columns(20), 4);
+    fn rect(width: u16, height: u16) -> Rect {
+        Rect::new(0, 0, width, height)
     }
 
     #[test]
-    fn twelve_tabs_are_four_by_three() {
-        assert_eq!(columns(12), 4);
-        assert_eq!(rows(12), 3);
+    fn framed_cards_follow_title_widths() {
+        let plan = LayoutPlan::calculate(&[4, 18, 7], rect(50, 6), 0);
+        assert_eq!(plan.mode, LayoutMode::Framed);
+        assert!(plan.cards[0].area.width < plan.cards[1].area.width);
+        assert!(plan.cards[2].area.width < plan.cards[1].area.width);
+        assert!(plan
+            .cards
+            .iter()
+            .all(|card| card.area.height == FRAMED_CARD_HEIGHT as u16));
     }
 
     #[test]
-    fn left_right_wrap_in_reading_order() {
-        assert_eq!(step(0, 5, 0, -1), 4);
-        assert_eq!(step(4, 5, 0, 1), 0);
-        assert_eq!(step(2, 5, 0, 1), 3);
+    fn flow_wraps_in_tab_order() {
+        let plan = LayoutPlan::calculate(&[8, 14, 8, 14], rect(30, 7), 0);
+        assert_eq!(plan.mode, LayoutMode::Framed);
+        assert_eq!(plan.total_rows, 2);
+        assert_eq!(plan.cards[0].row, 0);
+        assert_eq!(plan.cards[1].row, 0);
+        assert_eq!(plan.cards[2].row, 1);
     }
 
     #[test]
-    fn up_down_move_in_a_single_row() {
-        assert_eq!(step(0, 2, 1, 0), 1);
-        assert_eq!(step(1, 2, 1, 0), 0);
-        assert_eq!(step(0, 2, -1, 0), 1);
+    fn medium_viewport_drops_frames() {
+        let plan = LayoutPlan::calculate(&[8; 12], rect(30, 4), 0);
+        assert_eq!(plan.mode, LayoutMode::Compact);
+        assert_eq!(plan.visible_count, 12);
     }
 
     #[test]
-    fn down_from_last_row_wraps() {
-        // 5 tabs, 3 cols:
-        // 0 1 2
-        // 3 4 _
-        assert_eq!(step(0, 5, 1, 0), 3);
-        assert_eq!(step(1, 5, 1, 0), 4);
-        assert_eq!(step(2, 5, 1, 0), 4); // empty → last in that row
-        assert_eq!(step(3, 5, 1, 0), 0);
+    fn tiny_viewport_scrolls_a_readable_single_column() {
+        let plan = LayoutPlan::calculate(&[12; 20], rect(12, 4), 7);
+        assert_eq!(plan.mode, LayoutMode::Scroll);
+        assert_eq!(plan.first_visible, 7);
+        assert_eq!(plan.visible_count, 4);
+        assert_eq!(plan.cards[0].index, 7);
+        assert_eq!(plan.cards[3].index, 10);
+    }
+
+    #[test]
+    fn vertical_navigation_uses_nearest_horizontal_center() {
+        let plan = LayoutPlan::calculate(&[6, 18, 6, 12], rect(30, 7), 0);
+        assert_eq!(plan.total_rows, 2);
+        assert_eq!(plan.vertical_neighbor(1, 1), 3);
+        assert_eq!(plan.vertical_neighbor(2, -1), 0);
     }
 }
