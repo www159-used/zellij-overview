@@ -179,8 +179,6 @@ fn map_key(key: &KeyWithModifier, hinting: bool) -> Option<Key> {
             BareKey::Right => Some(Key::Right),
             BareKey::PageDown => Some(Key::PageDown),
             BareKey::PageUp => Some(Key::PageUp),
-            BareKey::Home if !hinting => Some(Key::First),
-            BareKey::End if !hinting => Some(Key::Last),
             BareKey::Enter if !hinting => Some(Key::Confirm),
             BareKey::Esc => Some(Key::Dismiss),
             BareKey::Backspace if hinting => Some(Key::Backspace),

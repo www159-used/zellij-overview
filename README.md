@@ -23,7 +23,7 @@ mv overview-v*.wasm ~/.config/zellij/plugins/overview.wasm
 
 ### 从源码构建
 
-仓库已固定 Rust 工具链和 WASM target：
+仓库通过 `rust-toolchain.toml` 固定 Rust `1.95.0` 和 `wasm32-wasip1` target：
 
 ```bash
 git clone https://github.com/www159-used/zellij-overview.git
@@ -36,6 +36,7 @@ cp target/wasm32-wasip1/release/overview.wasm ~/.config/zellij/plugins/
 ## 配置快捷键
 
 将下面的配置加入 `~/.config/zellij/config.kdl` 的 `keybinds`：
+直接使用 `file:` URL，不要通过插件 alias 启动，以保证实例识别一致。
 
 ```kdl
 shared {
@@ -96,10 +97,10 @@ shared {
 | --- | --- |
 | `h` `j` `k` `l` | 移动选中项（普通模式） |
 | 方向键 | 移动选中项（普通模式和搜索模式） |
-| `Ctrl+d` / `Ctrl+u` | 向下 / 向上滚动半页 |
-| `Ctrl+f` / `Ctrl+b` | 向下 / 向上滚动一页 |
+| `Ctrl+d` / `Ctrl+u` | 向下 / 向上滚动半页（普通模式） |
+| `Ctrl+f` / `Ctrl+b` | 向下 / 向上滚动一页（普通模式） |
 | `gg` / `G` | 跳到第一个 / 最后一个 tab |
-| `zt` / `zz` / `zb` | 将当前 tab 对齐顶部 / 居中 / 底部 |
+| `zt` / `zz` / `zb` | 在滚动列表中将当前 tab 对齐顶部 / 居中 / 底部 |
 | `PageDown` / `PageUp` | 向下 / 向上滚动一页 |
 | `e` / `Enter` | 跳到选中的 tab（普通模式） |
 | `s` | 进入搜索 |
@@ -108,7 +109,7 @@ shared {
 | `Esc` | 取消搜索 |
 | `-` | 返回上一个 tab（普通模式） |
 | `q` / `Esc` | 关闭 overview（普通模式） |
-| `?` | 打开或关闭完整快捷键帮助 |
+| `?` | 打开或关闭完整快捷键帮助（普通模式；搜索模式下作为输入） |
 | `Ctrl+y` | 再次按下时关闭 overview |
 
 ## 已知限制
@@ -122,6 +123,7 @@ pane 也会暂时出现；关闭 overview 后，该图层会重新隐藏。目�
 ```bash
 cargo fmt --check
 cargo lint
+# 本机核心测试，不要使用 WASM target
 cargo test --lib
 cargo wasm
 zellij -l zellij.kdl
@@ -139,6 +141,8 @@ cargo install cargo-release
 cargo release patch
 cargo release patch --execute
 ```
+
+也可将 `patch` 替换为 `minor`、`major` 或明确版本号。
 
 推送 `v*` tag 后，GitHub Actions 会验证项目、构建 WASM、生成 SHA-256 并创建
 GitHub Release。

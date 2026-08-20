@@ -115,13 +115,15 @@ fn flow_plan(
     if available_width < minimum_width {
         return None;
     }
+    if item_widths
+        .iter()
+        .any(|width| width.saturating_add(frame_width) > available_width)
+    {
+        return None;
+    }
     let widths: Vec<usize> = item_widths
         .iter()
-        .map(|width| {
-            width
-                .saturating_add(frame_width)
-                .clamp(minimum_width, available_width)
-        })
+        .map(|width| width.saturating_add(frame_width).max(minimum_width))
         .collect();
     let rows = wrap_rows(&widths, available_width);
     if rows.len().saturating_mul(card_height) > usize::from(area.height) {
@@ -184,11 +186,16 @@ fn wrap_rows(widths: &[usize], available_width: usize) -> Vec<Vec<(usize, usize)
 fn scroll_plan(tab_count: usize, area: Rect, scroll_offset: usize) -> LayoutPlan {
     let first_visible = scroll_offset.min(tab_count.saturating_sub(1));
     let visible_count = usize::from(area.height).min(tab_count - first_visible);
+    let has_hidden_items =
+        first_visible > 0 || first_visible.saturating_add(visible_count) < tab_count;
+    let content_width = area
+        .width
+        .saturating_sub(u16::from(area.width > 1 && has_hidden_items));
     let cards = (0..visible_count)
         .map(|visible_index| CardPlacement {
             index: first_visible + visible_index,
             row: first_visible + visible_index,
-            area: Rect::new(area.x, area.y + visible_index as u16, area.width, 1),
+            area: Rect::new(area.x, area.y + visible_index as u16, content_width, 1),
         })
         .collect();
 
@@ -252,6 +259,14 @@ mod tests {
         assert_eq!(plan.visible_count, 4);
         assert_eq!(plan.cards[0].index, 7);
         assert_eq!(plan.cards[3].index, 10);
+        assert_eq!(plan.cards[0].area.width, 11);
+    }
+
+    #[test]
+    fn title_wider_than_viewport_uses_scroll_without_clipping_a_frame() {
+        let plan = LayoutPlan::calculate(&[30], rect(12, 20), 0);
+        assert_eq!(plan.mode, LayoutMode::Scroll);
+        assert_eq!(plan.cards[0].area.width, 12);
     }
 
     #[test]

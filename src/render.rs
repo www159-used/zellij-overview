@@ -1,5 +1,5 @@
 use ratatui::{
-    buffer::Buffer,
+    buffer::{Buffer, CellWidth},
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -101,11 +101,12 @@ fn render_help(area: Rect, buffer: &mut Buffer) {
         Line::from("Ctrl+f/b, PgDn/Up  full page down/up"),
         Line::from("gg / G             first / last tab"),
         Line::from("zt / zz / zb       align top / center / bottom"),
-        Line::from("s                   Flash search"),
+        Line::from("s, then query/tip   Flash search / jump"),
+        Line::from("Backspace / Esc     delete / cancel search"),
         Line::from("e / Enter           go to selected tab"),
         Line::from("-                   previous tab"),
-        Line::from("q / Esc             back"),
-        Line::from("?                   close help"),
+        Line::from("q / Esc / ?         back / close help"),
+        Line::from("Ctrl+y              toggle overview (global)"),
     ];
     Paragraph::new(lines).render(inner, buffer);
 }
@@ -182,6 +183,7 @@ fn render_card(
         ),
         LayoutMode::Scroll => area,
     };
+    let spans = truncate_spans(spans, usize::from(text_area.width));
     Paragraph::new(Line::from(spans))
         .alignment(if mode == LayoutMode::Scroll {
             Alignment::Left
@@ -189,6 +191,51 @@ fn render_card(
             Alignment::Center
         })
         .render(text_area, buffer);
+}
+
+fn truncate_spans<'a>(spans: Vec<Span<'a>>, max_width: usize) -> Vec<Span<'a>> {
+    let total_width: usize = spans.iter().map(Span::width).sum();
+    if total_width <= max_width {
+        return spans;
+    }
+    if max_width == 0 {
+        return Vec::new();
+    }
+
+    let target_width = max_width - 1;
+    let mut used_width = 0;
+    let mut output = Vec::new();
+    let mut ellipsis_style = Style::default().fg(CARD_FOREGROUND);
+
+    'spans: for span in spans {
+        ellipsis_style = span.style;
+        let span_width = span.width();
+        if used_width + span_width <= target_width {
+            used_width += span_width;
+            output.push(span);
+            continue;
+        }
+        let mut partial = String::new();
+        for grapheme in span.styled_graphemes(Style::default()) {
+            let grapheme_width = usize::from(grapheme.symbol.cell_width());
+            if used_width + grapheme_width > target_width {
+                if !partial.is_empty() {
+                    output.push(Span::styled(partial, span.style));
+                }
+                break 'spans;
+            }
+            partial.push_str(grapheme.symbol);
+            used_width += grapheme_width;
+        }
+        if !partial.is_empty() {
+            output.push(Span::styled(partial, span.style));
+        }
+        if used_width >= target_width {
+            break;
+        }
+    }
+    output.push(Span::styled("…", ellipsis_style));
+    output
 }
 
 fn render_scroll_indicators(plan: &LayoutPlan, tab_count: usize, area: Rect, buffer: &mut Buffer) {
@@ -441,5 +488,19 @@ mod tests {
         assert!(joined.contains("Ctrl+d/u"));
         assert!(joined.contains("zt / zz / zb"));
         assert!(joined.contains("? / q / Esc close help"));
+    }
+
+    #[test]
+    fn truncated_unicode_titles_end_with_an_ellipsis() {
+        let spans = truncate_spans(vec![Span::raw("你好世界")], 5);
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "你好…");
+    }
+
+    #[test]
+    fn truncation_keeps_emoji_graphemes_intact() {
+        let spans = truncate_spans(vec![Span::raw("👩‍💻xy")], 3);
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "👩‍💻…");
     }
 }

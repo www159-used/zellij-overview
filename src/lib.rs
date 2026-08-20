@@ -28,7 +28,6 @@ pub enum Key {
     PageDown,
     PageUp,
     GoPrefix,
-    First,
     Last,
     ZPrefix,
     AlignTop,
@@ -226,10 +225,6 @@ impl Overview {
                 self.pending_g = true;
                 Action::None
             }
-            Key::First => {
-                self.cursor = 0;
-                Action::None
-            }
             Key::Last => {
                 self.cursor = self.tabs.len().saturating_sub(1);
                 Action::None
@@ -305,7 +300,6 @@ impl Overview {
                 | Key::PageDown
                 | Key::PageUp
                 | Key::GoPrefix
-                | Key::First
                 | Key::Last
                 | Key::ZPrefix
                 | Key::AlignTop
