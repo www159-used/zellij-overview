@@ -76,8 +76,7 @@ impl ZellijPlugin for State {
                 true
             }
             Event::SessionUpdate(sessions, _) => {
-                if let Some(session) = sessions.iter().find(|session| session.is_current_session)
-                {
+                if let Some(session) = sessions.iter().find(|session| session.is_current_session) {
                     let previous_tab_id = self.client_id.and_then(|client_id| {
                         session
                             .tab_history
