@@ -7,9 +7,8 @@ use ratatui::{
 };
 
 use crate::{
-    display_name,
     grid::{LayoutMode, LayoutPlan},
-    Overview, TabFact,
+    Overview,
 };
 
 const MATCH_COLOR: Color = Color::Rgb(255, 184, 108);
@@ -61,9 +60,15 @@ fn render_cards(overview: &Overview, area: Rect, buffer: &mut Buffer) {
         render_help(area, buffer);
         return;
     }
-    let tabs = overview.tabs();
-    if tabs.is_empty() {
-        Paragraph::new("no tabs")
+    if overview.item_count() == 0 {
+        let empty = if overview.is_sessions_layer() {
+            "no sessions"
+        } else if overview.is_panes_layer() {
+            "no panes"
+        } else {
+            "no tabs"
+        };
+        Paragraph::new(empty)
             .style(Style::default().fg(Color::DarkGray))
             .render(area, buffer);
         return;
@@ -74,16 +79,9 @@ fn render_cards(overview: &Overview, area: Rect, buffer: &mut Buffer) {
 
     let plan = overview.layout_plan(area);
     for card in &plan.cards {
-        render_card(
-            overview,
-            card.index,
-            &tabs[card.index],
-            card.area,
-            plan.mode,
-            buffer,
-        );
+        render_card(overview, card.index, card.area, plan.mode, buffer);
     }
-    render_scroll_indicators(&plan, tabs.len(), area, buffer);
+    render_scroll_indicators(&plan, overview.item_count(), area, buffer);
 }
 
 fn render_help(area: Rect, buffer: &mut Buffer) {
@@ -100,12 +98,14 @@ fn render_help(area: Rect, buffer: &mut Buffer) {
         Line::from("h/j/k/l, arrows  move"),
         Line::from("Ctrl+d/u           half page down/up"),
         Line::from("Ctrl+f/b, PgDn/Up  full page down/up"),
-        Line::from("gg / G             first / last tab"),
+        Line::from("gg / G             first / last item"),
         Line::from("zt / zz / zb       align top / center / bottom"),
+        Line::from("Space              leader"),
+        Line::from("  s / t / p        sessions / tabs / panes"),
         Line::from("s, then query/tip   Flash search / jump"),
         Line::from("Backspace / Esc     delete / cancel search"),
-        Line::from("e / Enter           go to selected tab"),
-        Line::from("-                   previous tab"),
+        Line::from("e / Enter           go to selected item"),
+        Line::from("-                   previous tab / pane"),
         Line::from("q / Esc / ?         back / close help"),
         Line::from("Ctrl+y              toggle overview (global)"),
     ];
@@ -115,7 +115,6 @@ fn render_help(area: Rect, buffer: &mut Buffer) {
 fn render_card(
     overview: &Overview,
     index: usize,
-    tab: &TabFact,
     area: Rect,
     mode: LayoutMode,
     buffer: &mut Buffer,
@@ -124,6 +123,7 @@ fn render_card(
         return;
     }
 
+    let title = overview.item_title(index).unwrap_or("");
     let match_range = overview.hint_match_range(index);
     let candidate = match_range.is_some() && !overview.hint_query().is_empty();
     let mut spans = Vec::new();
@@ -135,10 +135,10 @@ fn render_card(
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    if tab.active {
+    if overview.item_is_active(index) {
         spans.push(Span::styled("● ", Style::default().fg(FOCUS_BORDER)));
     }
-    if overview.is_previous_tab(index) {
+    if overview.is_previous_item(index) {
         spans.push(Span::styled(
             "[-] ",
             Style::default()
@@ -148,13 +148,36 @@ fn render_card(
     }
     if overview.is_hinting() {
         spans.extend(highlighted_title(
-            display_name(tab),
+            title,
             match_range.filter(|_| candidate),
             overview.hint_label(index),
             overview.hint_jump_prefix().len(),
         ));
     } else {
-        spans.push(Span::raw(display_name(tab)));
+        spans.push(Span::raw(title));
+    }
+    if overview.is_sessions_layer() {
+        if let Some(count) = overview
+            .sessions()
+            .get(index)
+            .map(|session| session.tab_count)
+        {
+            spans.push(Span::styled(
+                format!("  {count}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+    if overview.is_panes_layer()
+        && overview
+            .panes()
+            .get(index)
+            .is_some_and(|pane| pane.floating)
+    {
+        spans.push(Span::styled(
+            "  float",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
     let text_area = match mode {
         LayoutMode::Framed => {
@@ -324,8 +347,32 @@ fn render_footer(overview: &Overview, area: Rect, buffer: &mut Buffer) {
             ),
             Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
         ])
+    } else if overview.is_space_pending() {
+        Line::from(vec![
+            Span::styled(
+                " SPACE ",
+                Style::default().fg(TIP_FOREGROUND).bg(TIP_BACKGROUND),
+            ),
+            Span::raw("  s sessions   t tabs   p panes   Esc cancel"),
+        ])
+    } else if overview.is_sessions_layer() {
+        Line::from(vec![
+            Span::styled(
+                " SESSIONS ",
+                Style::default().fg(TIP_FOREGROUND).bg(TIP_BACKGROUND),
+            ),
+            Span::raw("  hjkl move   s search   e go   Space   q back   ? help"),
+        ])
+    } else if overview.is_panes_layer() {
+        Line::from(vec![
+            Span::styled(
+                " PANES ",
+                Style::default().fg(TIP_FOREGROUND).bg(TIP_BACKGROUND),
+            ),
+            Span::raw("  hjkl move   s search   e go   - prev   Space   q back   ? help"),
+        ])
     } else {
-        Line::from("hjkl move   s search   e go   - prev   q back   ? help")
+        Line::from("hjkl move   s search   e go   - prev   Space   q back   ? help")
     };
     Paragraph::new(line).render(area, buffer);
 }
@@ -394,6 +441,27 @@ mod tests {
         overview.set_previous_tab_id(Some(2));
         let joined = paint(&overview, 12, 40).lines.join("\n");
         assert!(joined.contains("[-]"));
+    }
+
+    #[test]
+    fn session_layer_does_not_mark_a_previous_destination() {
+        let mut overview = overview();
+        overview.apply_sessions(vec![
+            crate::SessionFact {
+                name: "dev".into(),
+                current: true,
+                tab_count: 2,
+            },
+            crate::SessionFact {
+                name: "ops".into(),
+                current: false,
+                tab_count: 1,
+            },
+        ]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::StartHint);
+        let joined = paint(&overview, 12, 40).lines.join("\n");
+        assert!(!joined.contains("[-]"));
     }
 
     #[test]
@@ -490,7 +558,75 @@ mod tests {
         let joined = paint(&overview, 14, 50).lines.join("\n");
         assert!(joined.contains("Ctrl+d/u"));
         assert!(joined.contains("zt / zz / zb"));
+        assert!(joined.contains("Space"));
+        assert!(joined.contains("s / t / p"));
         assert!(joined.contains("? / q / Esc close help"));
+    }
+
+    #[test]
+    fn space_prefix_rewrites_the_footer_shortcuts() {
+        let mut overview = overview();
+        overview.decide(Key::SpacePrefix);
+        let joined = paint(&overview, 12, 40).lines.join("\n");
+        assert!(joined.contains("SPACE"));
+        assert!(joined.contains("s sessions"));
+        assert!(joined.contains("t tabs"));
+        assert!(joined.contains("p panes"));
+        assert!(!joined.contains("SESSIONS"));
+    }
+
+    #[test]
+    fn session_layer_paints_sessions_badge_and_tab_counts() {
+        let mut overview = overview();
+        overview.apply_sessions(vec![
+            crate::SessionFact {
+                name: "ww".into(),
+                current: true,
+                tab_count: 4,
+            },
+            crate::SessionFact {
+                name: "t".into(),
+                current: false,
+                tab_count: 2,
+            },
+        ]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::StartHint);
+        let joined = paint(&overview, 12, 40).lines.join("\n");
+        assert!(joined.contains("SESSIONS"));
+        assert!(joined.contains("ww"));
+        assert!(joined.contains("t"));
+        assert!(joined.contains('4'));
+        assert!(joined.contains('2'));
+    }
+
+    #[test]
+    fn pane_layer_paints_panes_badge_and_float_marker() {
+        let mut overview = overview();
+        overview.apply_panes(vec![
+            crate::PaneFact {
+                id: 3,
+                is_plugin: false,
+                title: "nvim".into(),
+                active: true,
+                floating: false,
+            },
+            crate::PaneFact {
+                id: 4,
+                is_plugin: false,
+                title: "logs".into(),
+                active: false,
+                floating: true,
+            },
+        ]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::PanesLayer);
+        let joined = paint(&overview, 12, 40).lines.join("\n");
+        assert!(joined.contains("PANES"));
+        assert!(joined.contains("nvim"));
+        assert!(joined.contains("logs"));
+        assert!(joined.contains("float"));
+        assert!(!joined.contains('●'));
     }
 
     #[test]

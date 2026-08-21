@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use overview::{Action, Key, Overview, TabFact};
+use overview::{Action, Key, Overview, PaneFact, SessionFact, TabFact};
 use zellij_tile::prelude::*;
 
 mod floating_state;
@@ -17,6 +17,8 @@ struct State {
     permissions_granted: bool,
     pane_manifest: Option<PaneManifest>,
     floating_layer: FloatingLayerState,
+    active_tab_position: Option<usize>,
+    previous_focused_pane: Option<PaneId>,
     /// Snap cursor to the active tab on the first TabUpdate after open.
     pending_initial_cursor: bool,
 }
@@ -57,29 +59,41 @@ impl ZellijPlugin for State {
             Event::PaneUpdate(manifest) => {
                 self.pane_manifest = Some(manifest);
                 self.close_if_duplicate();
-                false
+                self.refresh_panes();
+                true
             }
             Event::TabUpdate(tabs) => {
+                self.capture_floating_layer(&tabs);
+                self.active_tab_position =
+                    tabs.iter().find(|tab| tab.active).map(|tab| tab.position);
                 self.overview
                     .apply_tabs(tabs.into_iter().map(tab_fact).collect());
                 if self.pending_initial_cursor {
                     self.overview.reset_cursor_to_active();
                     self.pending_initial_cursor = false;
                 }
+                self.refresh_panes();
                 true
             }
             Event::SessionUpdate(sessions, _) => {
-                let current_session = sessions.iter().find(|session| session.is_current_session);
-                let previous_tab_id = self.client_id.and_then(|client_id| {
-                    current_session
-                        .and_then(|session| session.tab_history.get(&client_id))
-                        .and_then(|history| history.last())
-                        .copied()
-                });
-                self.overview.set_previous_tab_id(previous_tab_id);
-                let previous_pane_was_floating =
-                    current_session.and_then(|session| self.previous_pane_was_floating(session));
-                self.floating_layer.capture(previous_pane_was_floating);
+                if let Some(session) = sessions.iter().find(|session| session.is_current_session)
+                {
+                    let previous_tab_id = self.client_id.and_then(|client_id| {
+                        session
+                            .tab_history
+                            .get(&client_id)
+                            .and_then(|history| history.last())
+                            .copied()
+                    });
+                    self.previous_focused_pane = self.nth_previous_pane(session, 0);
+                    self.overview.set_previous_tab_id(previous_tab_id);
+                    self.overview
+                        .set_previous_pane(self.nth_previous_pane(session, 1).map(pane_id_parts));
+                    self.capture_floating_layer(&session.tabs);
+                }
+                self.overview
+                    .apply_sessions(sessions.into_iter().map(session_fact).collect());
+                self.refresh_panes();
                 true
             }
             Event::Key(key) => self.handle_key(key),
@@ -90,15 +104,15 @@ impl ZellijPlugin for State {
     fn render(&mut self, rows: usize, cols: usize) {
         self.overview.set_viewport(rows, cols);
         let frame = self.overview.paint(rows, cols);
-        for line in frame.lines {
-            println!("{line}");
-        }
+        // The plugin pane is exactly `rows` high. A newline after the last
+        // line scrolls the first card into scrollback (Tab #1 vanishes).
+        write_plugin_lines(&frame.lines);
     }
 }
 
 impl State {
     fn close_if_duplicate(&self) {
-        if !self.permissions_granted {
+        if !self.permissions_granted || !self.own_pane_is_listed() {
             return;
         }
         let Some(manifest) = self.pane_manifest.as_ref() else {
@@ -149,28 +163,39 @@ impl State {
         }
     }
 
-    fn previous_pane_was_floating(&self, session: &SessionInfo) -> Option<bool> {
-        let own_pane = PaneId::Plugin(self.own_plugin_id?);
-        let previous_pane = session
-            .pane_history
-            .get(&self.client_id?)?
+    fn capture_floating_layer(&mut self, tabs: &[TabInfo]) {
+        if self.own_pane_is_listed() {
+            return;
+        }
+        let visible = tabs
             .iter()
-            .rev()
-            .find(|pane_id| **pane_id != own_pane)?;
-        session
-            .panes
-            .panes
-            .values()
-            .flatten()
-            .find(|pane| pane_id(pane) == *previous_pane)
-            .map(|pane| pane.is_floating)
+            .find(|tab| tab.active)
+            .map(|tab| tab.are_floating_panes_visible);
+        self.floating_layer.capture(visible);
+    }
+
+    fn own_pane_is_listed(&self) -> bool {
+        let Some(own_id) = self.own_plugin_id else {
+            return false;
+        };
+        self.pane_manifest.as_ref().is_some_and(|manifest| {
+            manifest
+                .panes
+                .values()
+                .flatten()
+                .any(|pane| pane.is_plugin && pane.id == own_id)
+        })
     }
 
     fn handle_key(&mut self, key: KeyWithModifier) -> bool {
         let Some(mapped) = map_key(&key, self.overview.is_hinting()) else {
             return false;
         };
+        let entering_sessions = !self.overview.is_sessions_layer();
         let action = self.overview.decide(mapped);
+        if entering_sessions && self.overview.is_sessions_layer() {
+            self.refresh_sessions();
+        }
         match action {
             Action::None => true,
             Action::Dismiss => {
@@ -187,16 +212,121 @@ impl State {
                 toggle_tab();
                 false
             }
+            Action::SwitchSession { name } => {
+                self.dismiss();
+                switch_session(Some(&name));
+                false
+            }
+            Action::FocusPane {
+                id,
+                is_plugin,
+                floating,
+            } => {
+                if !floating {
+                    self.restore_floating_layer();
+                }
+                close_self();
+                focus_pane_with_id(host_pane_id(id, is_plugin), floating, false);
+                false
+            }
         }
+    }
+
+    fn refresh_sessions(&mut self) {
+        if !self.permissions_granted {
+            return;
+        }
+        let Ok(snapshot) = get_session_list() else {
+            return;
+        };
+        self.overview.apply_sessions(
+            snapshot
+                .live_sessions
+                .into_iter()
+                .map(session_fact)
+                .collect(),
+        );
+    }
+
+    fn refresh_panes(&mut self) {
+        let Some(manifest) = self.pane_manifest.as_ref() else {
+            return;
+        };
+        let tab_position = self.active_tab_position.unwrap_or(0);
+        self.overview.apply_panes(pane_facts(
+            manifest,
+            tab_position,
+            self.own_plugin_id,
+            self.previous_focused_pane,
+        ));
+    }
+
+    fn nth_previous_pane(&self, session: &SessionInfo, skip: usize) -> Option<PaneId> {
+        let own_pane = PaneId::Plugin(self.own_plugin_id?);
+        session
+            .pane_history
+            .get(&self.client_id?)?
+            .iter()
+            .rev()
+            .filter(|pane_id| **pane_id != own_pane)
+            .nth(skip)
+            .copied()
     }
 }
 
 fn pane_id(pane: &PaneInfo) -> PaneId {
-    if pane.is_plugin {
-        PaneId::Plugin(pane.id)
-    } else {
-        PaneId::Terminal(pane.id)
+    host_pane_id(pane.id, pane.is_plugin)
+}
+
+fn write_plugin_lines(lines: &[String]) {
+    let Some((last, rest)) = lines.split_last() else {
+        return;
+    };
+    for line in rest {
+        println!("{line}");
     }
+    print!("{last}");
+}
+
+fn host_pane_id(id: u32, is_plugin: bool) -> PaneId {
+    if is_plugin {
+        PaneId::Plugin(id)
+    } else {
+        PaneId::Terminal(id)
+    }
+}
+
+fn pane_id_parts(pane_id: PaneId) -> (u32, bool) {
+    match pane_id {
+        PaneId::Plugin(id) => (id, true),
+        PaneId::Terminal(id) => (id, false),
+    }
+}
+
+fn pane_facts(
+    manifest: &PaneManifest,
+    tab_position: usize,
+    own_plugin_id: Option<u32>,
+    previous_focused: Option<PaneId>,
+) -> Vec<PaneFact> {
+    manifest
+        .panes
+        .get(&tab_position)
+        .into_iter()
+        .flatten()
+        .filter(|pane| pane.is_selectable && !pane.is_suppressed)
+        .filter(|pane| !(pane.is_plugin && Some(pane.id) == own_plugin_id))
+        .map(|pane| {
+            let id = pane_id(pane);
+            PaneFact {
+                id: pane.id,
+                is_plugin: pane.is_plugin,
+                title: pane.title.clone(),
+                active: previous_focused == Some(id),
+                floating: pane.is_floating,
+            }
+        })
+        .collect()
 }
 
 fn tab_fact(tab: TabInfo) -> TabFact {
@@ -205,6 +335,14 @@ fn tab_fact(tab: TabInfo) -> TabFact {
         position: tab.position,
         name: tab.name,
         active: tab.active,
+    }
+}
+
+fn session_fact(session: SessionInfo) -> SessionFact {
+    SessionFact {
+        name: session.name,
+        current: session.is_current_session,
+        tab_count: session.tabs.len(),
     }
 }
 
@@ -220,7 +358,9 @@ fn map_key(key: &KeyWithModifier, hinting: bool) -> Option<Key> {
             BareKey::Enter if !hinting => Some(Key::Confirm),
             BareKey::Esc => Some(Key::Dismiss),
             BareKey::Backspace if hinting => Some(Key::Backspace),
+            BareKey::Char(' ') if !hinting => Some(Key::SpacePrefix),
             BareKey::Char('s') if !hinting => Some(Key::StartHint),
+            BareKey::Char('p') if !hinting => Some(Key::PanesLayer),
             BareKey::Char(c) if hinting => Some(Key::Input(c)),
             BareKey::Char('z') => Some(Key::ZPrefix),
             BareKey::Char('t') => Some(Key::AlignTop),

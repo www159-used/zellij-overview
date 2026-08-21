@@ -1,0 +1,22 @@
+layout {
+    cwd "demo/fixtures"
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+        children
+        pane size=1 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+    tab name="deploy" {
+        pane name="deploy" command="./hold.sh" {
+            args "deploy.txt"
+        }
+    }
+    tab name="metrics" {
+        pane name="metrics" command="./hold.sh" {
+            args "metrics.txt"
+        }
+    }
+}

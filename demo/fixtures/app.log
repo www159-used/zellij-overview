@@ -1,0 +1,7 @@
+12:01:03 INFO  listener bound 127.0.0.1:8080
+12:01:04 INFO  loaded name-map 14821 rows
+12:01:11 WARN  cache miss region=eu-west
+12:01:12 INFO  geo lookup q=berlin hit=true 4ms
+12:01:18 INFO  geo lookup q=osaka hit=true 3ms
+12:01:22 WARN  retry ingest batch=42
+12:01:25 INFO  flush ok rows=200

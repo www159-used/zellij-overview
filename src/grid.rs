@@ -67,7 +67,8 @@ impl LayoutPlan {
         if self.tab_count == 0 {
             return 0;
         }
-        (index as isize + direction).rem_euclid(self.tab_count as isize) as usize
+        let last = self.tab_count.saturating_sub(1) as isize;
+        (index as isize + direction).clamp(0, last) as usize
     }
 
     pub fn vertical_neighbor(&self, index: usize, direction: isize) -> usize {
@@ -80,8 +81,11 @@ impl LayoutPlan {
         let Some(current) = self.cards.iter().find(|card| card.index == index) else {
             return index.min(self.tab_count - 1);
         };
-        let target_row =
-            (current.row as isize + direction).rem_euclid(self.total_rows as isize) as usize;
+        let target_row = current.row as isize + direction;
+        if target_row < 0 || target_row >= self.total_rows as isize {
+            return index;
+        }
+        let target_row = target_row as usize;
         let current_center = center_x(current.area);
         self.cards
             .iter()
@@ -275,5 +279,22 @@ mod tests {
         assert_eq!(plan.total_rows, 2);
         assert_eq!(plan.vertical_neighbor(1, 1), 3);
         assert_eq!(plan.vertical_neighbor(2, -1), 0);
+    }
+
+    #[test]
+    fn neighbors_stop_at_both_ends() {
+        let plan = LayoutPlan::calculate(&[12; 20], rect(12, 4), 0);
+        assert_eq!(plan.mode, LayoutMode::Scroll);
+        assert_eq!(plan.horizontal_neighbor(0, -1), 0);
+        assert_eq!(plan.vertical_neighbor(0, -1), 0);
+        assert_eq!(plan.horizontal_neighbor(19, 1), 19);
+        assert_eq!(plan.vertical_neighbor(19, 1), 19);
+
+        let flow = LayoutPlan::calculate(&[6, 18, 6, 12], rect(30, 7), 0);
+        assert_eq!(flow.total_rows, 2);
+        assert_eq!(flow.vertical_neighbor(1, -1), 1);
+        assert_eq!(flow.vertical_neighbor(3, 1), 3);
+        assert_eq!(flow.horizontal_neighbor(0, -1), 0);
+        assert_eq!(flow.horizontal_neighbor(3, 1), 3);
     }
 }

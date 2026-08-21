@@ -1,0 +1,9 @@
+On branch feature/geo-db
+Your branch is ahead of 'origin/main' by 2 commits.
+
+Changes not staged for commit:
+  modified:   src/lookup.rs
+  modified:   tests/geo.rs
+
+Untracked files:
+  demo/overview.gif

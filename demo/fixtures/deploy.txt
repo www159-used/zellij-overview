@@ -1,0 +1,9 @@
+deploy staging
+  image    app:0.2.1
+  cluster  staging-a
+  replicas 3/3 ready
+  last     2 minutes ago
+
+next
+  canary   10%
+  health   pass

@@ -1,29 +1,33 @@
 # overview
 
-在一个浮动窗口中查看并切换 Zellij tab。
+English · [中文](docs/zh/README.md)
 
-按 `Ctrl+y` 打开 overview，选择目标后按 `e`；tab 较多时，按 `s` 输入标题片段，
-再按候选项旁的提示字符即可直接跳转。
+Browse and switch Zellij sessions, tabs, and panes from a floating window.
 
-界面会根据标题长度和浮窗尺寸自动切换有框流式布局、无框紧凑布局和滚动列表。
+Press `Ctrl+y` to open, move with `hjkl`, and jump with `e`. When there are many items, press `s` to search a title fragment, then press the tip next to a match. `Space` is the layer leader: `s` for sessions, `t` back to tabs, `p` for panes in the current tab.
 
-## 安装
+The layout switches between framed cards, compact cards, and a scrolling list based on title length and the floating pane size.
 
-需要 Zellij 0.44 或更高版本。
+<video src="asset/open.mov" controls width="720"></video>
 
-### 使用 Release
+## Install
 
-从 [Releases](https://github.com/www159-used/zellij-overview/releases) 下载 WASM，
-将它重命名并放到 Zellij 插件目录：
+Zellij 0.44 or newer is required.
+
+### From a Release
+
+Download the WASM from
+[Releases](https://github.com/www159-used/zellij-overview/releases),
+rename it, and put it in the plugin directory:
 
 ```bash
 mkdir -p ~/.config/zellij/plugins
 mv overview-v*.wasm ~/.config/zellij/plugins/overview.wasm
 ```
 
-### 从源码构建
+### From source
 
-仓库通过 `rust-toolchain.toml` 固定 Rust `1.95.0` 和 `wasm32-wasip1` target：
+`rust-toolchain.toml` pins Rust `1.95.0` and the `wasm32-wasip1` target:
 
 ```bash
 git clone https://github.com/www159-used/zellij-overview.git
@@ -33,10 +37,10 @@ mkdir -p ~/.config/zellij/plugins
 cp target/wasm32-wasip1/release/overview.wasm ~/.config/zellij/plugins/
 ```
 
-## 配置快捷键
+## Keybinding
 
-将下面的配置加入 `~/.config/zellij/config.kdl` 的 `keybinds`：
-直接使用 `file:` URL，不要通过插件 alias 启动，以保证实例识别一致。
+Add this to `keybinds` in `~/.config/zellij/config.kdl`.
+Use a `file:` URL, not a plugin alias, so instance identity stays consistent.
 
 ```kdl
 shared {
@@ -49,92 +53,134 @@ shared {
 }
 ```
 
-第一次打开时，Zellij 会询问读取和更改会话状态的权限，选择允许即可。
+On first launch Zellij asks for permission to read and change session state. Allow it. Press `Ctrl+y` again to close overview.
 
-## 使用
+## Usage
 
-### 选择并跳转
+The footer shows the common keys. Press `?` inside overview for the full help.
 
-1. 按 `Ctrl+y` 打开 overview。
-2. 用 `h`、`j`、`k`、`l` 或方向键移动选中框。
-3. 按 `e` 或 `Enter` 跳转。
+### Select and jump
 
-### 快速搜索
+1. Press `Ctrl+y` to open overview.
+2. Move the selection with `h` `j` `k` `l` or the arrow keys.
+3. Press `e` or `Enter` to jump to the selected tab, session, or pane.
 
-假设存在 `notes`、`feature/geo-db` 和 `logs` 三个 tab：
+Movement stops at both ends of the list; it does not wrap. Use `gg` / `G` to jump to the first or last item. In the scrolling list, the camera follows when the cursor leaves the window.
 
-1. 按 `s` 进入搜索。
-2. 输入 `geo`。
-3. 匹配项会高亮，并显示类似 `a` 的提示字符。
-4. 按 `a` 立即跳到 `feature/geo-db`，无需再按 Enter。
+### Flash search
 
-### 返回上一个 tab
+<video src="asset/flash.mov" controls width="720"></video>
 
-标有 `[-]` 的卡片是上一次聚焦的 tab。按 `-` 可直接返回。
+Suppose you have tabs named `notes`, `feature/geo-db`, and `logs`:
 
-### 状态标记
+1. Press `s` to start search. The footer becomes `FLASH`.
+2. Type `geo`.
+3. Matches highlight and get a tip such as `a`.
+4. Press `a` to jump to `feature/geo-db` immediately, without Enter.
 
-- 紫色边框或 `›`：键盘当前选中的 tab
-- `●`：当前实际所在的 tab
-- `[-]`：按 `-` 将返回的 tab
+`Backspace` deletes the query. `Esc` leaves search and returns to normal mode.
 
-### 自适应布局
+### Three layers: session / tab / pane
 
-- 空间充足时，卡片宽度跟随标题长度并自动换行
-- 同一行可以包含不同宽度的卡片，但所有卡片保持等高
-- 空间较小时自动去掉边框和 padding
-- 无法同时清晰显示全部 tab 时切换为单列滚动列表
-- 方向键或普通模式下的 `hjkl` 会移动选中项，并自动滚动到可见位置
-- 滚动列表右侧的 `↑` / `↓` 表示还有未显示的 tab
+`Space` is the layer leader. After you press it, the footer becomes `SPACE  s sessions   t tabs   p panes`.
 
-调整终端或浮窗尺寸后，布局会自动重新换行。上下移动会选择相邻行中横向位置最近的卡片。
-
-### 快捷键
-
-底部只显示常用操作；按 `?` 可在 overview 内查看完整快捷键帮助。
-
-| 按键 | 操作 |
+| Keys | Action |
 | --- | --- |
-| `h` `j` `k` `l` | 移动选中项（普通模式） |
-| 方向键 | 移动选中项（普通模式和搜索模式） |
-| `Ctrl+d` / `Ctrl+u` | 向下 / 向上滚动半页（普通模式） |
-| `Ctrl+f` / `Ctrl+b` | 向下 / 向上滚动一页（普通模式） |
-| `gg` / `G` | 跳到第一个 / 最后一个 tab |
-| `zt` / `zz` / `zb` | 在滚动列表中将当前 tab 对齐顶部 / 居中 / 底部 |
-| `PageDown` / `PageUp` | 向下 / 向上滚动一页 |
-| `e` / `Enter` | 跳到选中的 tab（普通模式） |
-| `s` | 进入搜索 |
-| 任意字符 | 输入查询或 tip（搜索模式） |
-| `Backspace` | 删除搜索输入（搜索模式） |
-| `Esc` | 取消搜索 |
-| `-` | 返回上一个 tab（普通模式） |
-| `q` / `Esc` | 关闭 overview（普通模式） |
-| `?` | 打开或关闭完整快捷键帮助（普通模式；搜索模式下作为输入） |
-| `Ctrl+y` | 再次按下时关闭 overview |
+| `Space` `s` | Enter the session layer |
+| `Space` `t` | Return to the tab layer |
+| `Space` `p` | Enter the pane layer for the current tab |
+| `Esc` | Cancel the leader without changing layers |
 
-## 已知限制
+In normal mode, `s` still starts Flash search. You only enter the session layer after `Space`.
 
-Zellij 会整体显示或隐藏 floating layer。打开 overview 时，原本隐藏的其他 floating
-pane 也会暂时出现；关闭 overview 后，该图层会重新隐藏。目前 Zellij 插件 API
-无法只显示一个可交互的 floating pane。
+#### Session
 
-## 开发
+<video src="asset/sessions.mov" controls width="720"></video>
+
+1. Press `Space` `s`. The footer shows `SESSIONS`.
+2. Pick a target with `hjkl` or Flash `s`, then press `e` or a tip to switch sessions.
+3. `q` / `Esc` returns to the tab layer. Press it once more to close overview.
+
+The session layer lists live sessions only. Each card shows that session's tab count. WASM has no filesystem, so there is no previous session across overview launches.
+
+#### Pane
+
+<video src="asset/pane.mov" controls width="720"></video>
+
+1. Press `Space` `p`. The footer shows `PANES`.
+2. The list includes selectable, unsuppressed panes in the current tab, and excludes overview itself. Floating panes are marked `float`.
+3. Press `e` or a tip to focus that pane. Overview then closes.
+4. `q` / `Esc` returns to the tab layer.
+
+### Go to the previous item
+
+<video src="asset/previous.mov" controls width="720"></video>
+
+A card marked `[-]` is the previously focused tab or pane. Press `-` to jump there.
+
+The previous tab comes from Zellij tab history; the previous pane comes from pane history. The session layer has no reliable previous item yet.
+
+### Status marks
+
+- Purple border or `›`: the keyboard selection
+- `●`: the tab or session you are actually on
+- `[-]`: the tab or pane `-` will return to
+- `float`: a floating pane
+
+### Adaptive layout
+
+<video src="asset/scroll.mov" controls width="720"></video>
+
+- When there is room, card width follows the title and wraps
+- Cards on the same row may have different widths, but they stay the same height
+- When space is tight, borders and padding drop
+- When every item cannot stay readable at once, the view becomes a single scrolling column; `↑` / `↓` on the right mean more items are off-screen
+- `hjkl` moves the selection; the camera follows; both ends stop
+- Resizing the terminal or the floating pane reflows the layout
+- Up and down pick the card whose horizontal center is nearest on the adjacent row
+
+### Keys
+
+| Key | Action |
+| --- | --- |
+| `h` `j` `k` `l` | Move the selection (normal mode) |
+| Arrow keys | Move the selection (normal and search modes) |
+| `Ctrl+d` / `Ctrl+u` | Half page down / up (normal mode) |
+| `Ctrl+f` / `Ctrl+b` | Full page down / up (normal mode) |
+| `gg` / `G` | First / last item |
+| `zt` / `zz` / `zb` | Align the current item to the top / center / bottom in a scrolling list |
+| `PageDown` / `PageUp` | Full page down / up |
+| `e` / `Enter` | Jump to the selected tab, session, or pane (normal mode) |
+| `Space` | Layer leader; then `s` / `t` / `p` for session / tab / pane |
+| `s` | Start Flash search |
+| Any character | Query or tip (search mode) |
+| `Backspace` | Delete search input (search mode) |
+| `Esc` | Cancel search or the leader; from the session or pane layer, return to tabs |
+| `-` | Previous tab or pane (normal mode) |
+| `q` / `Esc` | Go back a layer or close overview (normal mode) |
+| `?` | Toggle full help (normal mode; typed as input in search mode) |
+| `Ctrl+y` | Close overview when pressed again |
+
+## Known limits
+
+Zellij shows or hides the floating layer as a whole. Opening overview also reveals other floating panes that were hidden; closing it restores that layer to the state from before overview opened. The plugin API cannot show only one interactive floating pane.
+
+## Develop
 
 ```bash
 cargo fmt --check
 cargo lint
-# 本机核心测试，不要使用 WASM target
+# Host-side core tests; do not use the WASM target
 cargo test --lib
 cargo wasm
 zellij -l zellij.kdl
 ```
 
-开发布局会从 `target/wasm32-wasip1/release/overview.wasm` 启动插件。界面通过
-Ratatui Buffer 渲染，Zellij 适配层负责读取 tab 状态和执行跳转。
+The development layout loads `target/wasm32-wasip1/release/overview.wasm`. The UI is painted through a Ratatui buffer; the Zellij adapter reads tabs, sessions, and panes and performs the jump.
 
-## 发布
+## Release
 
-安装 [`cargo-release`](https://github.com/crate-ci/cargo-release)，先预演再发布：
+Install [`cargo-release`](https://github.com/crate-ci/cargo-release), dry-run, then publish:
 
 ```bash
 cargo install cargo-release
@@ -142,11 +188,10 @@ cargo release patch
 cargo release patch --execute
 ```
 
-也可将 `patch` 替换为 `minor`、`major` 或明确版本号。
+You can replace `patch` with `minor`, `major`, or an explicit version.
 
-推送 `v*` tag 后，GitHub Actions 会验证项目、构建 WASM、生成 SHA-256 并创建
-GitHub Release。
+Pushing a `v*` tag makes GitHub Actions verify the project, build the WASM, compute SHA-256, and create a GitHub Release.
 
-## 许可证
+## License
 
-本项目采用 [GNU Affero General Public License v3.0 only](LICENSE)。
+This project is licensed under the [GNU Affero General Public License v3.0 only](LICENSE).

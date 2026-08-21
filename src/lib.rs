@@ -17,6 +17,30 @@ pub struct TabFact {
     pub active: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFact {
+    pub name: String,
+    pub current: bool,
+    pub tab_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneFact {
+    pub id: u32,
+    pub is_plugin: bool,
+    pub title: String,
+    pub active: bool,
+    pub floating: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layer {
+    #[default]
+    Tabs,
+    Sessions,
+    Panes,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Left,
@@ -37,12 +61,14 @@ pub enum Key {
     ToggleHelp,
     Dismiss,
     Toggle,
+    SpacePrefix,
+    PanesLayer,
     StartHint,
     Input(char),
     Backspace,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     None,
     Dismiss,
@@ -51,6 +77,14 @@ pub enum Action {
         tab_index: u32,
     },
     PreviousTab,
+    SwitchSession {
+        name: String,
+    },
+    FocusPane {
+        id: u32,
+        is_plugin: bool,
+        floating: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -70,13 +104,18 @@ struct HintState {
 #[derive(Debug, Default)]
 pub struct Overview {
     tabs: Vec<TabFact>,
-    /// Index into `tabs` (tab-bar order).
+    sessions: Vec<SessionFact>,
+    panes: Vec<PaneFact>,
+    layer: Layer,
+    /// Index into the current layer's items.
     cursor: usize,
     previous_tab_id: Option<usize>,
+    previous_pane: Option<(u32, bool)>,
     viewport: Option<(usize, usize)>,
     scroll_offset: usize,
     pending_g: bool,
     pending_z: bool,
+    pending_space: bool,
     show_help: bool,
     hint: Option<HintState>,
 }
@@ -88,24 +127,93 @@ impl Overview {
 
     pub fn apply_tabs(&mut self, mut tabs: Vec<TabFact>) {
         tabs.sort_by_key(|t| t.position);
-        let cursor_id = self.selected_tab().map(|t| t.id);
+        let cursor_id = if self.layer == Layer::Tabs {
+            self.selected_tab().map(|t| t.id)
+        } else {
+            None
+        };
         self.tabs = tabs;
-        self.reseat_cursor(cursor_id);
-        if self.hint.is_some() {
-            self.recompute_hint_labels();
+        if self.layer == Layer::Tabs {
+            self.reseat_tab_cursor(cursor_id);
+            if self.hint.is_some() {
+                self.recompute_hint_labels();
+            }
+        }
+    }
+
+    pub fn apply_sessions(&mut self, mut sessions: Vec<SessionFact>) {
+        sessions.sort_by(|left, right| {
+            right
+                .current
+                .cmp(&left.current)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        let cursor_name = if self.layer == Layer::Sessions {
+            self.selected_session().map(|session| session.name.clone())
+        } else {
+            None
+        };
+        self.sessions = sessions;
+        if self.layer == Layer::Sessions {
+            self.reseat_session_cursor(cursor_name);
+            if self.hint.is_some() {
+                self.recompute_hint_labels();
+            }
+        }
+    }
+
+    pub fn apply_panes(&mut self, mut panes: Vec<PaneFact>) {
+        panes.sort_by(|left, right| {
+            right
+                .active
+                .cmp(&left.active)
+                .then_with(|| left.floating.cmp(&right.floating))
+                .then_with(|| left.title.cmp(&right.title))
+        });
+        let cursor_id = if self.layer == Layer::Panes {
+            self.selected_pane().map(|pane| (pane.id, pane.is_plugin))
+        } else {
+            None
+        };
+        self.panes = panes;
+        if self.layer == Layer::Panes {
+            self.reseat_pane_cursor(cursor_id);
+            if self.hint.is_some() {
+                self.recompute_hint_labels();
+            }
         }
     }
 
     pub fn reset_cursor_to_active(&mut self) {
-        if let Some(index) = self.tabs.iter().position(|t| t.active) {
-            self.cursor = index;
-        } else {
-            self.cursor = 0;
-        }
+        self.cursor = self.active_index().unwrap_or(0);
     }
 
     pub fn tabs(&self) -> &[TabFact] {
         &self.tabs
+    }
+
+    pub fn sessions(&self) -> &[SessionFact] {
+        &self.sessions
+    }
+
+    pub fn layer(&self) -> Layer {
+        self.layer
+    }
+
+    pub fn panes(&self) -> &[PaneFact] {
+        &self.panes
+    }
+
+    pub fn is_sessions_layer(&self) -> bool {
+        self.layer == Layer::Sessions
+    }
+
+    pub fn is_panes_layer(&self) -> bool {
+        self.layer == Layer::Panes
+    }
+
+    pub fn is_space_pending(&self) -> bool {
+        self.pending_space
     }
 
     pub fn cursor(&self) -> usize {
@@ -116,15 +224,31 @@ impl Overview {
         self.previous_tab_id = tab_id;
     }
 
+    pub fn set_previous_pane(&mut self, pane: Option<(u32, bool)>) {
+        self.previous_pane = pane;
+    }
+
     pub fn set_viewport(&mut self, rows: usize, cols: usize) {
         self.viewport = Some((rows, cols));
         self.ensure_index_visible(self.cursor);
     }
 
+    pub fn is_previous_item(&self, index: usize) -> bool {
+        match self.layer {
+            Layer::Tabs => self
+                .tabs
+                .get(index)
+                .is_some_and(|tab| Some(tab.id) == self.previous_tab_id),
+            Layer::Sessions => false,
+            Layer::Panes => self
+                .panes
+                .get(index)
+                .is_some_and(|pane| self.previous_pane == Some((pane.id, pane.is_plugin))),
+        }
+    }
+
     pub fn is_previous_tab(&self, index: usize) -> bool {
-        self.tabs
-            .get(index)
-            .is_some_and(|tab| Some(tab.id) == self.previous_tab_id)
+        self.layer == Layer::Tabs && self.is_previous_item(index)
     }
 
     pub fn is_hinting(&self) -> bool {
@@ -162,8 +286,37 @@ impl Overview {
 
     pub fn hint_match_range(&self, index: usize) -> Option<(usize, usize)> {
         let hint = self.hint.as_ref()?;
-        let tab = self.tabs.get(index)?;
-        title_match_range(display_name(tab), &hint.query)
+        title_match_range(self.item_title(index)?, &hint.query)
+    }
+
+    pub fn item_title(&self, index: usize) -> Option<&str> {
+        match self.layer {
+            Layer::Tabs => self.tabs.get(index).map(display_name),
+            Layer::Sessions => self
+                .sessions
+                .get(index)
+                .map(|session| session.name.as_str()),
+            Layer::Panes => self.panes.get(index).map(pane_display_name),
+        }
+    }
+
+    pub fn item_is_active(&self, index: usize) -> bool {
+        match self.layer {
+            Layer::Tabs => self.tabs.get(index).is_some_and(|tab| tab.active),
+            Layer::Sessions => self
+                .sessions
+                .get(index)
+                .is_some_and(|session| session.current),
+            Layer::Panes => false,
+        }
+    }
+
+    pub fn item_count(&self) -> usize {
+        match self.layer {
+            Layer::Tabs => self.tabs.len(),
+            Layer::Sessions => self.sessions.len(),
+            Layer::Panes => self.panes.len(),
+        }
     }
 
     pub fn decide(&mut self, key: Key) -> Action {
@@ -174,6 +327,29 @@ impl Overview {
                     Action::None
                 }
                 _ => Action::None,
+            };
+        }
+        if self.pending_space {
+            self.pending_space = false;
+            return match key {
+                Key::StartHint => {
+                    self.enter_layer(Layer::Sessions);
+                    Action::None
+                }
+                Key::AlignTop => {
+                    self.enter_layer(Layer::Tabs);
+                    Action::None
+                }
+                Key::PanesLayer => {
+                    self.enter_layer(Layer::Panes);
+                    Action::None
+                }
+                Key::SpacePrefix => {
+                    self.pending_space = true;
+                    Action::None
+                }
+                Key::Dismiss => Action::None,
+                _ => self.decide(key),
             };
         }
         let plan = self.current_layout_plan();
@@ -228,7 +404,11 @@ impl Overview {
                 Action::None
             }
             Key::Last => {
-                self.cursor = self.tabs.len().saturating_sub(1);
+                self.cursor = self.item_count().saturating_sub(1);
+                Action::None
+            }
+            Key::SpacePrefix => {
+                self.pending_space = true;
                 Action::None
             }
             Key::ZPrefix if z_was_pending => {
@@ -256,16 +436,21 @@ impl Overview {
                 Action::None
             }
             Key::Confirm => self.commit_cursor(),
-            Key::PreviousTab => Action::PreviousTab,
+            Key::PreviousTab => self.commit_previous(),
             Key::Dismiss if self.is_hinting() => {
                 self.hint = None;
                 self.reset_cursor_to_active();
                 Action::None
             }
+            Key::PanesLayer => Action::None,
+            Key::Dismiss if self.layer == Layer::Sessions || self.layer == Layer::Panes => {
+                self.enter_layer(Layer::Tabs);
+                Action::None
+            }
             Key::Dismiss | Key::Toggle => Action::Dismiss,
             Key::StartHint => {
                 self.hint = Some(HintState {
-                    labels: vec![None; self.tabs.len()],
+                    labels: vec![None; self.item_count()],
                     query: String::new(),
                     jump_prefix: String::new(),
                 });
@@ -318,12 +503,66 @@ impl Overview {
     }
 
     fn commit_cursor(&self) -> Action {
-        match self.selected_tab() {
-            Some(tab) => Action::Commit {
-                tab_index: tab.position as u32,
-            },
-            None => Action::Dismiss,
+        self.commit_index(self.cursor)
+    }
+
+    fn commit_previous(&self) -> Action {
+        match self.layer {
+            Layer::Tabs => Action::PreviousTab,
+            Layer::Sessions => Action::None,
+            Layer::Panes => self
+                .panes
+                .iter()
+                .find(|pane| self.previous_pane == Some((pane.id, pane.is_plugin)))
+                .map(|pane| Action::FocusPane {
+                    id: pane.id,
+                    is_plugin: pane.is_plugin,
+                    floating: pane.floating,
+                })
+                .unwrap_or(Action::None),
         }
+    }
+
+    fn commit_index(&self, index: usize) -> Action {
+        match self.layer {
+            Layer::Tabs => self
+                .tabs
+                .get(index)
+                .map(|tab| Action::Commit {
+                    tab_index: tab.position as u32,
+                })
+                .unwrap_or(Action::Dismiss),
+            Layer::Sessions => self
+                .sessions
+                .get(index)
+                .map(|session| Action::SwitchSession {
+                    name: session.name.clone(),
+                })
+                .unwrap_or(Action::Dismiss),
+            Layer::Panes => self
+                .panes
+                .get(index)
+                .map(|pane| Action::FocusPane {
+                    id: pane.id,
+                    is_plugin: pane.is_plugin,
+                    floating: pane.floating,
+                })
+                .unwrap_or(Action::Dismiss),
+        }
+    }
+
+    fn enter_layer(&mut self, layer: Layer) {
+        if self.layer == layer {
+            return;
+        }
+        self.layer = layer;
+        self.hint = None;
+        self.pending_g = false;
+        self.pending_z = false;
+        self.pending_space = false;
+        self.scroll_offset = 0;
+        self.reset_cursor_to_active();
+        self.ensure_index_visible(self.cursor);
     }
 
     pub(crate) fn layout_plan(&self, area: Rect) -> grid::LayoutPlan {
@@ -354,7 +593,7 @@ impl Overview {
     }
 
     fn move_cursor_by(&mut self, delta: isize) {
-        let last = self.tabs.len().saturating_sub(1) as isize;
+        let last = self.item_count().saturating_sub(1) as isize;
         self.cursor = (self.cursor as isize + delta).clamp(0, last) as usize;
     }
 
@@ -377,19 +616,30 @@ impl Overview {
     }
 
     fn item_widths(&self) -> Vec<usize> {
-        self.tabs
-            .iter()
-            .enumerate()
-            .map(|(index, tab)| {
-                let title_width = Line::from(display_name(tab)).width();
-                let active_width = usize::from(tab.active) * 2;
-                let previous_width = usize::from(self.is_previous_tab(index)) * 4;
-                title_width + active_width + previous_width + 2
+        (0..self.item_count())
+            .map(|index| {
+                let title_width = Line::from(self.item_title(index).unwrap_or("")).width();
+                let active_width = usize::from(self.item_is_active(index)) * 2;
+                let previous_width = usize::from(self.is_previous_item(index)) * 4;
+                let count_width = match self.layer {
+                    Layer::Sessions => self
+                        .sessions
+                        .get(index)
+                        .map(|session| 2 + session.tab_count.to_string().len())
+                        .unwrap_or(0),
+                    Layer::Panes => self
+                        .panes
+                        .get(index)
+                        .map(|pane| if pane.floating { 7 } else { 0 })
+                        .unwrap_or(0),
+                    Layer::Tabs => 0,
+                };
+                title_width + active_width + previous_width + count_width + 2
             })
             .collect()
     }
 
-    fn reseat_cursor(&mut self, previous_id: Option<usize>) {
+    fn reseat_tab_cursor(&mut self, previous_id: Option<usize>) {
         if let Some(id) = previous_id {
             if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
                 self.cursor = index;
@@ -399,8 +649,52 @@ impl Overview {
         self.reset_cursor_to_active();
     }
 
+    fn reseat_session_cursor(&mut self, previous_name: Option<String>) {
+        if let Some(name) = previous_name {
+            if let Some(index) = self
+                .sessions
+                .iter()
+                .position(|session| session.name == name)
+            {
+                self.cursor = index;
+                return;
+            }
+        }
+        self.reset_cursor_to_active();
+    }
+
     fn selected_tab(&self) -> Option<&TabFact> {
         self.tabs.get(self.cursor)
+    }
+
+    fn selected_session(&self) -> Option<&SessionFact> {
+        self.sessions.get(self.cursor)
+    }
+
+    fn selected_pane(&self) -> Option<&PaneFact> {
+        self.panes.get(self.cursor)
+    }
+
+    fn reseat_pane_cursor(&mut self, previous: Option<(u32, bool)>) {
+        if let Some((id, is_plugin)) = previous {
+            if let Some(index) = self
+                .panes
+                .iter()
+                .position(|pane| pane.id == id && pane.is_plugin == is_plugin)
+            {
+                self.cursor = index;
+                return;
+            }
+        }
+        self.reset_cursor_to_active();
+    }
+
+    fn active_index(&self) -> Option<usize> {
+        match self.layer {
+            Layer::Tabs => self.tabs.iter().position(|tab| tab.active),
+            Layer::Sessions => self.sessions.iter().position(|session| session.current),
+            Layer::Panes => self.panes.iter().position(|pane| pane.active),
+        }
     }
 
     fn apply_hint_input(&mut self, ch: char) -> Action {
@@ -425,13 +719,7 @@ impl Overview {
             if label_matches.len() == 1
                 && hint.labels[label_matches[0]].as_deref() == Some(jump_prefix.as_str())
             {
-                return self
-                    .tabs
-                    .get(label_matches[0])
-                    .map(|tab| Action::Commit {
-                        tab_index: tab.position as u32,
-                    })
-                    .unwrap_or(Action::None);
+                return self.commit_index(label_matches[0]);
             }
             if !label_matches.is_empty() {
                 if let Some(hint) = self.hint.as_mut() {
@@ -443,10 +731,10 @@ impl Overview {
 
         let mut query = hint.query.clone();
         query.push(ch);
-        let has_matches = self
-            .tabs
-            .iter()
-            .any(|tab| title_match_range(display_name(tab), &query).is_some());
+        let has_matches = (0..self.item_count()).any(|index| {
+            self.item_title(index)
+                .is_some_and(|title| title_match_range(title, &query).is_some())
+        });
         if !has_matches {
             return Action::None;
         }
@@ -470,14 +758,12 @@ impl Overview {
             return;
         };
         let query = hint.query.clone();
-        let matches: Vec<usize> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .filter_map(|(index, tab)| {
-                title_match_range(display_name(tab), &query)
-                    .filter(|_| !query.is_empty())
-                    .map(|_| index)
+        let matches: Vec<usize> = (0..self.item_count())
+            .filter(|index| {
+                !query.is_empty()
+                    && self
+                        .item_title(*index)
+                        .is_some_and(|title| title_match_range(title, &query).is_some())
             })
             .collect();
         let mut available: Vec<u8> = HINT_ALPHABET
@@ -486,18 +772,19 @@ impl Overview {
             .filter(|candidate| {
                 let mut extended = query.clone();
                 extended.push(char::from(*candidate));
-                !self
-                    .tabs
-                    .iter()
-                    .any(|tab| title_match_range(display_name(tab), &extended).is_some())
+                !(0..self.item_count()).any(|index| {
+                    self.item_title(index)
+                        .is_some_and(|title| title_match_range(title, &extended).is_some())
+                })
             })
             .collect();
         if available.is_empty() {
             available.extend_from_slice(HINT_ALPHABET);
         }
         let generated = labels_for(matches.len(), &available);
+        let item_count = self.item_count();
         if let Some(hint) = self.hint.as_mut() {
-            hint.labels = vec![None; self.tabs.len()];
+            hint.labels = vec![None; item_count];
             for (index, label) in matches.into_iter().zip(generated) {
                 hint.labels[index] = Some(label);
             }
@@ -556,6 +843,14 @@ pub fn display_name(tab: &TabFact) -> &str {
         return "untitled";
     }
     name
+}
+
+fn pane_display_name(pane: &PaneFact) -> &str {
+    let title = pane.title.trim();
+    if title.is_empty() {
+        return "untitled";
+    }
+    title
 }
 
 #[cfg(test)]
@@ -624,6 +919,39 @@ mod tests {
         overview.set_viewport(7, 80);
         overview.decide(Key::Down);
         assert_eq!(overview.cursor(), 1);
+    }
+
+    #[test]
+    fn scrolling_stops_at_both_ends_and_keeps_the_camera_on_the_cursor() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(
+            (0..20)
+                .map(|position| {
+                    tab(
+                        position,
+                        position,
+                        &format!("tab-{position}"),
+                        position == 0,
+                    )
+                })
+                .collect(),
+        );
+        overview.set_viewport(6, 12);
+
+        overview.decide(Key::Left);
+        overview.decide(Key::Up);
+        overview.decide(Key::HalfPageUp);
+        assert_eq!(overview.cursor(), 0);
+        assert_eq!(overview.current_layout_plan().first_visible, 0);
+
+        overview.decide(Key::Last);
+        overview.decide(Key::Right);
+        overview.decide(Key::Down);
+        overview.decide(Key::HalfPageDown);
+        assert_eq!(overview.cursor(), 19);
+        let plan = overview.current_layout_plan();
+        assert!(overview.cursor() >= plan.first_visible);
+        assert!(overview.cursor() < plan.visible_end());
     }
 
     #[test]
@@ -879,5 +1207,195 @@ mod tests {
         assert_eq!(overview.decide(Key::Dismiss), Action::None);
         assert!(!overview.is_hinting());
         assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
+    }
+
+    fn session(name: &str, current: bool, tab_count: usize) -> SessionFact {
+        SessionFact {
+            name: name.to_owned(),
+            current,
+            tab_count,
+        }
+    }
+
+    #[test]
+    fn space_s_enters_the_session_layer() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
+        overview.apply_sessions(vec![session("t", false, 2), session("ww", true, 4)]);
+        assert_eq!(overview.decide(Key::SpacePrefix), Action::None);
+        assert!(overview.is_space_pending());
+        assert_eq!(overview.decide(Key::StartHint), Action::None);
+        assert_eq!(overview.layer(), Layer::Sessions);
+        assert_eq!(overview.sessions()[overview.cursor()].name, "ww");
+        assert!(!overview.is_hinting());
+        assert!(!overview.is_space_pending());
+    }
+
+    #[test]
+    fn space_t_returns_to_the_tab_layer() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
+        overview.apply_sessions(vec![session("ww", true, 1)]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::StartHint);
+        assert_eq!(overview.layer(), Layer::Sessions);
+        overview.decide(Key::SpacePrefix);
+        assert_eq!(overview.decide(Key::AlignTop), Action::None);
+        assert_eq!(overview.layer(), Layer::Tabs);
+        assert!(!overview.is_space_pending());
+    }
+
+    #[test]
+    fn space_then_escape_cancels_the_prefix() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
+        overview.decide(Key::SpacePrefix);
+        assert_eq!(overview.decide(Key::Dismiss), Action::None);
+        assert!(!overview.is_space_pending());
+        assert_eq!(overview.layer(), Layer::Tabs);
+    }
+
+    #[test]
+    fn session_layer_dismisses_back_to_tabs_before_closing() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
+        overview.apply_sessions(vec![session("ww", true, 1)]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::StartHint);
+        assert_eq!(overview.decide(Key::Dismiss), Action::None);
+        assert_eq!(overview.layer(), Layer::Tabs);
+        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
+    }
+
+    #[test]
+    fn session_layer_confirm_switches_session() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("t", false, 2), session("ww", true, 4)]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::StartHint);
+        overview.decide(Key::Last);
+        assert_eq!(
+            overview.decide(Key::Confirm),
+            Action::SwitchSession { name: "t".into() }
+        );
+    }
+
+    #[test]
+    fn session_layer_flash_tip_switches_without_confirmation() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("notes", true, 1), session("geo", false, 3)]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::StartHint);
+        overview.decide(Key::StartHint);
+        assert_eq!(overview.decide(Key::Input('g')), Action::None);
+        let label = overview.hint_label(1).unwrap().to_owned();
+        assert_eq!(
+            overview.decide(Key::Input(label.chars().next().unwrap())),
+            Action::SwitchSession { name: "geo".into() }
+        );
+    }
+
+    #[test]
+    fn apply_sessions_replaces_with_the_live_snapshot() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("t", false, 2), session("ww", true, 4)]);
+        overview.apply_sessions(vec![session("ww", true, 5)]);
+        assert_eq!(
+            overview
+                .sessions()
+                .iter()
+                .map(|session| session.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ww"]
+        );
+        assert_eq!(overview.sessions()[0].tab_count, 5);
+    }
+
+    #[test]
+    fn session_layer_dash_does_not_switch_session() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("t", false, 2), session("ww", true, 4)]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::StartHint);
+        assert!(!overview.is_previous_item(0));
+        assert!(!overview.is_previous_item(1));
+        assert_eq!(overview.decide(Key::PreviousTab), Action::None);
+    }
+
+    #[test]
+    fn pane_layer_dash_focuses_the_previous_pane() {
+        let mut overview = Overview::new();
+        overview.apply_panes(vec![
+            pane(3, "nvim", true, false),
+            pane(4, "logs", false, true),
+        ]);
+        overview.set_previous_pane(Some((4, false)));
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::PanesLayer);
+        assert!(overview.is_previous_item(1));
+        assert_eq!(
+            overview.decide(Key::PreviousTab),
+            Action::FocusPane {
+                id: 4,
+                is_plugin: false,
+                floating: true,
+            }
+        );
+    }
+
+    fn pane(id: u32, title: &str, active: bool, floating: bool) -> PaneFact {
+        PaneFact {
+            id,
+            is_plugin: false,
+            title: title.to_owned(),
+            active,
+            floating,
+        }
+    }
+
+    #[test]
+    fn space_p_enters_the_pane_layer() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
+        overview.apply_panes(vec![
+            pane(3, "nvim", true, false),
+            pane(4, "logs", false, true),
+        ]);
+        assert_eq!(overview.decide(Key::SpacePrefix), Action::None);
+        assert_eq!(overview.decide(Key::PanesLayer), Action::None);
+        assert_eq!(overview.layer(), Layer::Panes);
+        assert_eq!(overview.panes()[overview.cursor()].title, "nvim");
+        assert!(!overview.is_hinting());
+    }
+
+    #[test]
+    fn pane_layer_confirm_focuses_the_selected_pane() {
+        let mut overview = Overview::new();
+        overview.apply_panes(vec![
+            pane(3, "nvim", true, false),
+            pane(4, "logs", false, true),
+        ]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::PanesLayer);
+        overview.decide(Key::Last);
+        assert_eq!(
+            overview.decide(Key::Confirm),
+            Action::FocusPane {
+                id: 4,
+                is_plugin: false,
+                floating: true,
+            }
+        );
+    }
+
+    #[test]
+    fn pane_layer_dismisses_back_to_tabs() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
+        overview.apply_panes(vec![pane(3, "nvim", true, false)]);
+        overview.decide(Key::SpacePrefix);
+        overview.decide(Key::PanesLayer);
+        assert_eq!(overview.decide(Key::Dismiss), Action::None);
+        assert_eq!(overview.layer(), Layer::Tabs);
     }
 }
