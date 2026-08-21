@@ -1451,7 +1451,7 @@ checksum = "e2355d85b9a3786f481747ced0e0ff2ba35213a1f9bd406ed906554d7af805a1"
 
 [[package]]
 name = "overview"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ratatui",
  "zellij-tile",
