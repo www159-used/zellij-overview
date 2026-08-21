@@ -2,9 +2,9 @@
 
 [English](../../README.md) · 中文
 
-在浮动窗口里查看并切换 Zellij 的 session、tab 和 pane。
+在浮动窗口里查看并切换 Zellij 的 session 和 tab。
 
-按 `Ctrl+y` 打开，用 `hjkl` 移动，按 `e` 跳转。项多时按 `s` 搜索标题，再按候选项旁的 tip 即可直接跳走。`Space` 是层 leader：再按 `s` 进 session，按 `t` 回 tab，按 `p` 进当前 tab 的 pane。
+按 `Ctrl+y` 打开，用 `hjkl` 移动，按 `e` 跳转。session 钉在同一块板最前面，后面是当前 session 的 tab。项多时按 `s` 搜索标题，再按候选项旁的 tip 即可直接跳走。
 
 界面会按标题长度和浮窗尺寸，在有框卡片、无框紧凑和单列滚动之间切换。
 
@@ -30,10 +30,10 @@ mv overview-v*.wasm ~/.config/zellij/plugins/overview.wasm
 ```bash
 git clone https://github.com/www159-used/zellij-overview.git
 cd zellij-overview
-cargo wasm
-mkdir -p ~/.config/zellij/plugins
-cp target/wasm32-wasip1/release/overview.wasm ~/.config/zellij/plugins/
+./scripts/install.sh
 ```
+
+脚本会构建 WASM 并拷到 `~/.config/zellij/plugins/overview.wasm`。目标路径可用 `OVERVIEW_PLUGIN_PATH` 覆盖。
 
 ## 配置快捷键
 
@@ -61,7 +61,7 @@ shared {
 
 1. 按 `Ctrl+y` 打开 overview。
 2. 用 `h` `j` `k` `l` 或方向键移动选中框。
-3. 按 `e` 或 `Enter` 跳到选中的 tab、session 或 pane。
+3. 按 `e` 或 `Enter` 跳到选中的 session 或 tab。
 
 撞到列表两端会停住，不会绕回另一头。到头或到尾用 `gg` / `G`。滚动列表里，光标出窗时镜头会跟上。
 
@@ -78,52 +78,29 @@ shared {
 
 `Backspace` 删查询。`Esc` 退出搜索，回到普通模式。
 
-### 三层：session / tab / pane
+### session 和 tab 在同一块板
 
-`Space` 是层 leader。按下后 footer 变成 `SPACE  s sessions   t tabs   p panes`。
+活着的 session 钉在最前面，后面是当前 session 的 tab。没有层 leader，也不再列出 pane。
 
-| 按键 | 作用 |
-| --- | --- |
-| `Space` `s` | 进入 session 层 |
-| `Space` `t` | 回到 tab 层 |
-| `Space` `p` | 进入当前 tab 的 pane 层 |
-| `Esc` | 取消这次 leader，不换层 |
+- session 卡片以 `◆` 开头，并显示该 session 的 tab 数；够宽时用冷色框。
+- tab 卡片仍是原来的标题和标记。
+- 在 session 上按 `e` 或 Flash tip 会切换 session；在 tab 上则跳到该 tab。
+- footer 显示当前 session 名。
 
-普通模式下的 `s` 仍是 Flash 搜索，只有先按 `Space` 才进 session。
+够宽时全部是有框卡片并换行。不够宽时整页收成一列滚动：session 仍标 `◆`，tab 缩进一格。
 
-#### Session
-
-<video src="../../asset/sessions.mov" controls width="720"></video>
-
-1. `Space` `s`，footer 显示 `SESSIONS`。
-2. 用 `hjkl` 或 Flash `s` 选目标，再按 `e` 或 tip 切换 session。
-3. `q` / `Esc` 回到 tab 层；再按一次才关闭 overview。
-
-session 层只列出当前活着的 session，卡片右侧显示该 session 的 tab 数。WASM 没有文件系统，session 没有跨次打开的「上一项」。
-
-#### Pane
-
-<video src="../../asset/pane.mov" controls width="720"></video>
-
-1. `Space` `p`，footer 显示 `PANES`。
-2. 只列出当前 tab 里可选、未抑制的 pane，并排除 overview 自己。浮动 pane 标 `float`。
-3. 按 `e` 或 tip 聚焦该 pane，overview 随后关闭。
-4. `q` / `Esc` 回到 tab 层。
-
-### 返回上一项
+### 返回上一个 tab
 
 <video src="../../asset/previous.mov" controls width="720"></video>
 
-标有 `[-]` 的卡片是上一次聚焦的 tab 或 pane。按 `-` 直接返回。
-
-tab 的上一项来自 Zellij 的 tab 历史，pane 的上一项来自 pane 历史。session 层目前没有可靠的上一项。
+标有 `[-]` 的卡片是按 `-` 将返回的位置。同 session 里切 tab 时是上一个 tab；跳到别的 session 之后是你离开的那个 session（Zellij 在离开时会清掉该 session 的 tab 历史）。
 
 ### 状态标记
 
 - 紫色边框或 `›`：键盘当前选中的项
-- `●`：当前实际所在的 tab 或 session
-- `[-]`：按 `-` 将返回的 tab 或 pane
-- `float`：浮动 pane
+- `●`：当前实际所在的 session 或 tab
+- `◆`：session 卡片
+- `[-]`：按 `-` 将返回的 tab 或 session
 
 ### 自适应布局
 
@@ -148,14 +125,13 @@ tab 的上一项来自 Zellij 的 tab 历史，pane 的上一项来自 pane 历�
 | `gg` / `G` | 跳到第一项 / 最后一项 |
 | `zt` / `zz` / `zb` | 滚动列表里把当前项对齐顶部 / 居中 / 底部 |
 | `PageDown` / `PageUp` | 向下 / 向上一页 |
-| `e` / `Enter` | 跳到选中的 tab、session 或 pane（普通模式） |
-| `Space` | 层 leader；再按 `s` / `t` / `p` 进 session / tab / pane |
+| `e` / `Enter` | 跳到选中的 session 或 tab（普通模式） |
 | `s` | 进入 Flash 搜索 |
 | 任意字符 | 输入查询或 tip（搜索模式） |
 | `Backspace` | 删除搜索输入（搜索模式） |
-| `Esc` | 取消搜索或 leader；在 session / pane 层则回到 tab 层 |
-| `-` | 返回上一个 tab 或 pane（普通模式） |
-| `q` / `Esc` | 回到上一层或关闭 overview（普通模式） |
+| `Esc` | 取消搜索，或关闭 overview（普通模式） |
+| `-` | 返回上一个 tab，或跳走前的 session（普通模式） |
+| `q` / `Esc` | 关闭 overview（普通模式） |
 | `?` | 打开或关闭完整帮助（普通模式；搜索模式下作为输入） |
 | `Ctrl+y` | 再次按下时关闭 overview |
 

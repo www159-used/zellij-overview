@@ -24,23 +24,6 @@ pub struct SessionFact {
     pub tab_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaneFact {
-    pub id: u32,
-    pub is_plugin: bool,
-    pub title: String,
-    pub active: bool,
-    pub floating: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Layer {
-    #[default]
-    Tabs,
-    Sessions,
-    Panes,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Left,
@@ -61,8 +44,6 @@ pub enum Key {
     ToggleHelp,
     Dismiss,
     Toggle,
-    SpacePrefix,
-    PanesLayer,
     StartHint,
     Input(char),
     Backspace,
@@ -80,11 +61,12 @@ pub enum Action {
     SwitchSession {
         name: String,
     },
-    FocusPane {
-        id: u32,
-        is_plugin: bool,
-        floating: bool,
-    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BoardIdentity {
+    Session(String),
+    Tab(usize),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -105,17 +87,14 @@ struct HintState {
 pub struct Overview {
     tabs: Vec<TabFact>,
     sessions: Vec<SessionFact>,
-    panes: Vec<PaneFact>,
-    layer: Layer,
-    /// Index into the current layer's items.
+    /// Combined board: sessions first, then the current session's tabs.
     cursor: usize,
     previous_tab_id: Option<usize>,
-    previous_pane: Option<(u32, bool)>,
+    previous_session_name: Option<String>,
     viewport: Option<(usize, usize)>,
     scroll_offset: usize,
     pending_g: bool,
     pending_z: bool,
-    pending_space: bool,
     show_help: bool,
     hint: Option<HintState>,
 }
@@ -127,17 +106,11 @@ impl Overview {
 
     pub fn apply_tabs(&mut self, mut tabs: Vec<TabFact>) {
         tabs.sort_by_key(|t| t.position);
-        let cursor_id = if self.layer == Layer::Tabs {
-            self.selected_tab().map(|t| t.id)
-        } else {
-            None
-        };
+        let selected = self.selected_identity();
         self.tabs = tabs;
-        if self.layer == Layer::Tabs {
-            self.reseat_tab_cursor(cursor_id);
-            if self.hint.is_some() {
-                self.recompute_hint_labels();
-            }
+        self.reseat_cursor(selected);
+        if self.hint.is_some() {
+            self.recompute_hint_labels();
         }
     }
 
@@ -148,39 +121,44 @@ impl Overview {
                 .cmp(&left.current)
                 .then_with(|| left.name.cmp(&right.name))
         });
-        let cursor_name = if self.layer == Layer::Sessions {
-            self.selected_session().map(|session| session.name.clone())
-        } else {
-            None
-        };
+        let selected = self.selected_identity();
         self.sessions = sessions;
-        if self.layer == Layer::Sessions {
-            self.reseat_session_cursor(cursor_name);
-            if self.hint.is_some() {
-                self.recompute_hint_labels();
-            }
+        self.reseat_cursor(selected);
+        if self.hint.is_some() {
+            self.recompute_hint_labels();
         }
     }
 
-    pub fn apply_panes(&mut self, mut panes: Vec<PaneFact>) {
-        panes.sort_by(|left, right| {
-            right
-                .active
-                .cmp(&left.active)
-                .then_with(|| left.floating.cmp(&right.floating))
-                .then_with(|| left.title.cmp(&right.title))
-        });
-        let cursor_id = if self.layer == Layer::Panes {
-            self.selected_pane().map(|pane| (pane.id, pane.is_plugin))
+    pub fn touch_current_session(&mut self, session: SessionFact) {
+        let selected = self.selected_identity();
+        let name = session.name.clone();
+        for candidate in &mut self.sessions {
+            candidate.current = false;
+        }
+        if let Some(existing) = self
+            .sessions
+            .iter_mut()
+            .find(|candidate| candidate.name == name)
+        {
+            *existing = SessionFact {
+                current: true,
+                ..session
+            };
         } else {
-            None
-        };
-        self.panes = panes;
-        if self.layer == Layer::Panes {
-            self.reseat_pane_cursor(cursor_id);
-            if self.hint.is_some() {
-                self.recompute_hint_labels();
-            }
+            self.sessions.push(SessionFact {
+                current: true,
+                ..session
+            });
+        }
+        self.sessions.sort_by(|left, right| {
+            right
+                .current
+                .cmp(&left.current)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        self.reseat_cursor(selected);
+        if self.hint.is_some() {
+            self.recompute_hint_labels();
         }
     }
 
@@ -196,24 +174,11 @@ impl Overview {
         &self.sessions
     }
 
-    pub fn layer(&self) -> Layer {
-        self.layer
-    }
-
-    pub fn panes(&self) -> &[PaneFact] {
-        &self.panes
-    }
-
-    pub fn is_sessions_layer(&self) -> bool {
-        self.layer == Layer::Sessions
-    }
-
-    pub fn is_panes_layer(&self) -> bool {
-        self.layer == Layer::Panes
-    }
-
-    pub fn is_space_pending(&self) -> bool {
-        self.pending_space
+    pub fn current_session_name(&self) -> Option<&str> {
+        self.sessions
+            .iter()
+            .find(|session| session.current)
+            .map(|session| session.name.as_str())
     }
 
     pub fn cursor(&self) -> usize {
@@ -224,8 +189,15 @@ impl Overview {
         self.previous_tab_id = tab_id;
     }
 
-    pub fn set_previous_pane(&mut self, pane: Option<(u32, bool)>) {
-        self.previous_pane = pane;
+    pub fn set_previous_session_name(&mut self, name: Option<String>) {
+        self.previous_session_name = name.filter(|name| !name.is_empty());
+    }
+
+    pub fn active_tab_position(&self) -> Option<usize> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.active)
+            .map(|tab| tab.position)
     }
 
     pub fn set_viewport(&mut self, rows: usize, cols: usize) {
@@ -234,21 +206,21 @@ impl Overview {
     }
 
     pub fn is_previous_item(&self, index: usize) -> bool {
-        match self.layer {
-            Layer::Tabs => self
-                .tabs
-                .get(index)
-                .is_some_and(|tab| Some(tab.id) == self.previous_tab_id),
-            Layer::Sessions => false,
-            Layer::Panes => self
-                .panes
-                .get(index)
-                .is_some_and(|pane| self.previous_pane == Some((pane.id, pane.is_plugin))),
+        if let Some(name) = self.other_previous_session() {
+            return self
+                .session_at(index)
+                .is_some_and(|session| session.name == name);
         }
+        self.tab_at(index)
+            .is_some_and(|tab| Some(tab.id) == self.previous_tab_id)
     }
 
     pub fn is_previous_tab(&self, index: usize) -> bool {
-        self.layer == Layer::Tabs && self.is_previous_item(index)
+        self.is_previous_item(index)
+    }
+
+    pub(crate) fn item_is_session(&self, index: usize) -> bool {
+        index < self.sessions.len()
     }
 
     pub fn is_hinting(&self) -> bool {
@@ -290,33 +262,25 @@ impl Overview {
     }
 
     pub fn item_title(&self, index: usize) -> Option<&str> {
-        match self.layer {
-            Layer::Tabs => self.tabs.get(index).map(display_name),
-            Layer::Sessions => self
-                .sessions
-                .get(index)
-                .map(|session| session.name.as_str()),
-            Layer::Panes => self.panes.get(index).map(pane_display_name),
+        if let Some(session) = self.session_at(index) {
+            return Some(session.name.as_str());
         }
+        self.tab_at(index).map(display_name)
     }
 
     pub fn item_is_active(&self, index: usize) -> bool {
-        match self.layer {
-            Layer::Tabs => self.tabs.get(index).is_some_and(|tab| tab.active),
-            Layer::Sessions => self
-                .sessions
-                .get(index)
-                .is_some_and(|session| session.current),
-            Layer::Panes => false,
+        if let Some(session) = self.session_at(index) {
+            return session.current;
         }
+        self.tab_at(index).is_some_and(|tab| tab.active)
     }
 
     pub fn item_count(&self) -> usize {
-        match self.layer {
-            Layer::Tabs => self.tabs.len(),
-            Layer::Sessions => self.sessions.len(),
-            Layer::Panes => self.panes.len(),
-        }
+        self.sessions.len() + self.tabs.len()
+    }
+
+    pub(crate) fn item_tab_count(&self, index: usize) -> Option<usize> {
+        self.session_at(index).map(|session| session.tab_count)
     }
 
     pub fn decide(&mut self, key: Key) -> Action {
@@ -327,29 +291,6 @@ impl Overview {
                     Action::None
                 }
                 _ => Action::None,
-            };
-        }
-        if self.pending_space {
-            self.pending_space = false;
-            return match key {
-                Key::StartHint => {
-                    self.enter_layer(Layer::Sessions);
-                    Action::None
-                }
-                Key::AlignTop => {
-                    self.enter_layer(Layer::Tabs);
-                    Action::None
-                }
-                Key::PanesLayer => {
-                    self.enter_layer(Layer::Panes);
-                    Action::None
-                }
-                Key::SpacePrefix => {
-                    self.pending_space = true;
-                    Action::None
-                }
-                Key::Dismiss => Action::None,
-                _ => self.decide(key),
             };
         }
         let plan = self.current_layout_plan();
@@ -407,10 +348,6 @@ impl Overview {
                 self.cursor = self.item_count().saturating_sub(1);
                 Action::None
             }
-            Key::SpacePrefix => {
-                self.pending_space = true;
-                Action::None
-            }
             Key::ZPrefix if z_was_pending => {
                 self.pending_z = false;
                 self.align_cursor(ScrollAlignment::Center);
@@ -440,11 +377,6 @@ impl Overview {
             Key::Dismiss if self.is_hinting() => {
                 self.hint = None;
                 self.reset_cursor_to_active();
-                Action::None
-            }
-            Key::PanesLayer => Action::None,
-            Key::Dismiss if self.layer == Layer::Sessions || self.layer == Layer::Panes => {
-                self.enter_layer(Layer::Tabs);
                 Action::None
             }
             Key::Dismiss | Key::Toggle => Action::Dismiss,
@@ -507,62 +439,33 @@ impl Overview {
     }
 
     fn commit_previous(&self) -> Action {
-        match self.layer {
-            Layer::Tabs => Action::PreviousTab,
-            Layer::Sessions => Action::None,
-            Layer::Panes => self
-                .panes
-                .iter()
-                .find(|pane| self.previous_pane == Some((pane.id, pane.is_plugin)))
-                .map(|pane| Action::FocusPane {
-                    id: pane.id,
-                    is_plugin: pane.is_plugin,
-                    floating: pane.floating,
-                })
-                .unwrap_or(Action::None),
+        if let Some(name) = self.other_previous_session() {
+            return Action::SwitchSession {
+                name: name.to_owned(),
+            };
         }
+        Action::PreviousTab
+    }
+
+    fn other_previous_session(&self) -> Option<&str> {
+        let name = self.previous_session_name.as_deref()?;
+        self.sessions
+            .iter()
+            .find(|session| session.name == name && !session.current)
+            .map(|session| session.name.as_str())
     }
 
     fn commit_index(&self, index: usize) -> Action {
-        match self.layer {
-            Layer::Tabs => self
-                .tabs
-                .get(index)
-                .map(|tab| Action::Commit {
-                    tab_index: tab.position as u32,
-                })
-                .unwrap_or(Action::Dismiss),
-            Layer::Sessions => self
-                .sessions
-                .get(index)
-                .map(|session| Action::SwitchSession {
-                    name: session.name.clone(),
-                })
-                .unwrap_or(Action::Dismiss),
-            Layer::Panes => self
-                .panes
-                .get(index)
-                .map(|pane| Action::FocusPane {
-                    id: pane.id,
-                    is_plugin: pane.is_plugin,
-                    floating: pane.floating,
-                })
-                .unwrap_or(Action::Dismiss),
+        if let Some(session) = self.session_at(index) {
+            return Action::SwitchSession {
+                name: session.name.clone(),
+            };
         }
-    }
-
-    fn enter_layer(&mut self, layer: Layer) {
-        if self.layer == layer {
-            return;
-        }
-        self.layer = layer;
-        self.hint = None;
-        self.pending_g = false;
-        self.pending_z = false;
-        self.pending_space = false;
-        self.scroll_offset = 0;
-        self.reset_cursor_to_active();
-        self.ensure_index_visible(self.cursor);
+        self.tab_at(index)
+            .map(|tab| Action::Commit {
+                tab_index: tab.position as u32,
+            })
+            .unwrap_or(Action::Dismiss)
     }
 
     pub(crate) fn layout_plan(&self, area: Rect) -> grid::LayoutPlan {
@@ -621,80 +524,59 @@ impl Overview {
                 let title_width = Line::from(self.item_title(index).unwrap_or("")).width();
                 let active_width = usize::from(self.item_is_active(index)) * 2;
                 let previous_width = usize::from(self.is_previous_item(index)) * 4;
-                let count_width = match self.layer {
-                    Layer::Sessions => self
-                        .sessions
-                        .get(index)
-                        .map(|session| 2 + session.tab_count.to_string().len())
-                        .unwrap_or(0),
-                    Layer::Panes => self
-                        .panes
-                        .get(index)
-                        .map(|pane| if pane.floating { 7 } else { 0 })
-                        .unwrap_or(0),
-                    Layer::Tabs => 0,
-                };
-                title_width + active_width + previous_width + count_width + 2
+                let session_width = self
+                    .item_tab_count(index)
+                    .map(|count| SESSION_MARK_WIDTH + 2 + count.to_string().len())
+                    .unwrap_or(0);
+                title_width + active_width + previous_width + session_width + 2
             })
             .collect()
     }
 
-    fn reseat_tab_cursor(&mut self, previous_id: Option<usize>) {
-        if let Some(id) = previous_id {
-            if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
-                self.cursor = index;
-                return;
-            }
+    fn reseat_cursor(&mut self, selected: Option<BoardIdentity>) {
+        if let Some(index) = selected.and_then(|identity| self.index_of(&identity)) {
+            self.cursor = index;
+            return;
         }
         self.reset_cursor_to_active();
     }
 
-    fn reseat_session_cursor(&mut self, previous_name: Option<String>) {
-        if let Some(name) = previous_name {
-            if let Some(index) = self
+    fn selected_identity(&self) -> Option<BoardIdentity> {
+        if let Some(session) = self.session_at(self.cursor) {
+            return Some(BoardIdentity::Session(session.name.clone()));
+        }
+        self.tab_at(self.cursor)
+            .map(|tab| BoardIdentity::Tab(tab.id))
+    }
+
+    fn index_of(&self, identity: &BoardIdentity) -> Option<usize> {
+        match identity {
+            BoardIdentity::Session(name) => self
                 .sessions
                 .iter()
-                .position(|session| session.name == name)
-            {
-                self.cursor = index;
-                return;
-            }
-        }
-        self.reset_cursor_to_active();
-    }
-
-    fn selected_tab(&self) -> Option<&TabFact> {
-        self.tabs.get(self.cursor)
-    }
-
-    fn selected_session(&self) -> Option<&SessionFact> {
-        self.sessions.get(self.cursor)
-    }
-
-    fn selected_pane(&self) -> Option<&PaneFact> {
-        self.panes.get(self.cursor)
-    }
-
-    fn reseat_pane_cursor(&mut self, previous: Option<(u32, bool)>) {
-        if let Some((id, is_plugin)) = previous {
-            if let Some(index) = self
-                .panes
+                .position(|session| session.name == *name),
+            BoardIdentity::Tab(id) => self
+                .tabs
                 .iter()
-                .position(|pane| pane.id == id && pane.is_plugin == is_plugin)
-            {
-                self.cursor = index;
-                return;
-            }
+                .position(|tab| tab.id == *id)
+                .map(|index| self.sessions.len() + index),
         }
-        self.reset_cursor_to_active();
+    }
+
+    fn session_at(&self, index: usize) -> Option<&SessionFact> {
+        self.sessions.get(index)
+    }
+
+    fn tab_at(&self, index: usize) -> Option<&TabFact> {
+        self.tabs.get(index.checked_sub(self.sessions.len())?)
     }
 
     fn active_index(&self) -> Option<usize> {
-        match self.layer {
-            Layer::Tabs => self.tabs.iter().position(|tab| tab.active),
-            Layer::Sessions => self.sessions.iter().position(|session| session.current),
-            Layer::Panes => self.panes.iter().position(|pane| pane.active),
-        }
+        self.tabs
+            .iter()
+            .position(|tab| tab.active)
+            .map(|index| self.sessions.len() + index)
+            .or_else(|| self.sessions.iter().position(|session| session.current))
     }
 
     fn apply_hint_input(&mut self, ch: char) -> Action {
@@ -801,6 +683,7 @@ pub(crate) fn content_rows(rows: usize) -> usize {
 }
 
 const HINT_ALPHABET: &[u8] = b"asdfghjklqwertyuiopzxcvbnm";
+const SESSION_MARK_WIDTH: usize = 2;
 
 fn labels_for(count: usize, alphabet: &[u8]) -> Vec<String> {
     if count == 0 {
@@ -843,14 +726,6 @@ pub fn display_name(tab: &TabFact) -> &str {
         return "untitled";
     }
     name
-}
-
-fn pane_display_name(pane: &PaneFact) -> &str {
-    let title = pane.title.trim();
-    if title.is_empty() {
-        return "untitled";
-    }
-    title
 }
 
 #[cfg(test)]
@@ -1218,74 +1093,43 @@ mod tests {
     }
 
     #[test]
-    fn space_s_enters_the_session_layer() {
+    fn board_puts_sessions_before_tabs() {
         let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
-        overview.apply_sessions(vec![session("t", false, 2), session("ww", true, 4)]);
-        assert_eq!(overview.decide(Key::SpacePrefix), Action::None);
-        assert!(overview.is_space_pending());
-        assert_eq!(overview.decide(Key::StartHint), Action::None);
-        assert_eq!(overview.layer(), Layer::Sessions);
-        assert_eq!(overview.sessions()[overview.cursor()].name, "ww");
-        assert!(!overview.is_hinting());
-        assert!(!overview.is_space_pending());
-    }
-
-    #[test]
-    fn space_t_returns_to_the_tab_layer() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
-        overview.apply_sessions(vec![session("ww", true, 1)]);
-        overview.decide(Key::SpacePrefix);
-        overview.decide(Key::StartHint);
-        assert_eq!(overview.layer(), Layer::Sessions);
-        overview.decide(Key::SpacePrefix);
-        assert_eq!(overview.decide(Key::AlignTop), Action::None);
-        assert_eq!(overview.layer(), Layer::Tabs);
-        assert!(!overview.is_space_pending());
-    }
-
-    #[test]
-    fn space_then_escape_cancels_the_prefix() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
-        overview.decide(Key::SpacePrefix);
-        assert_eq!(overview.decide(Key::Dismiss), Action::None);
-        assert!(!overview.is_space_pending());
-        assert_eq!(overview.layer(), Layer::Tabs);
-    }
-
-    #[test]
-    fn session_layer_dismisses_back_to_tabs_before_closing() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
-        overview.apply_sessions(vec![session("ww", true, 1)]);
-        overview.decide(Key::SpacePrefix);
-        overview.decide(Key::StartHint);
-        assert_eq!(overview.decide(Key::Dismiss), Action::None);
-        assert_eq!(overview.layer(), Layer::Tabs);
-        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
-    }
-
-    #[test]
-    fn session_layer_confirm_switches_session() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("t", false, 2), session("ww", true, 4)]);
-        overview.decide(Key::SpacePrefix);
-        overview.decide(Key::StartHint);
-        overview.decide(Key::Last);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
+        assert_eq!(overview.item_count(), 4);
+        assert_eq!(overview.item_title(0), Some("ww"));
+        assert_eq!(overview.item_title(1), Some("lp"));
+        assert_eq!(overview.item_title(2), Some("notes"));
+        assert_eq!(overview.item_title(3), Some("logs"));
+        assert!(overview.item_is_session(0));
+        assert!(!overview.item_is_session(2));
+        overview.reset_cursor_to_active();
+        assert_eq!(overview.cursor(), 2);
         assert_eq!(
             overview.decide(Key::Confirm),
-            Action::SwitchSession { name: "t".into() }
+            Action::Commit { tab_index: 0 }
         );
     }
 
     #[test]
-    fn session_layer_flash_tip_switches_without_confirmation() {
+    fn confirm_on_a_session_card_switches_session() {
         let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("notes", true, 1), session("geo", false, 3)]);
-        overview.decide(Key::SpacePrefix);
-        overview.decide(Key::StartHint);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
+        overview.reset_cursor_to_active();
+        overview.decide(Key::Left);
+        assert_eq!(
+            overview.decide(Key::Confirm),
+            Action::SwitchSession { name: "lp".into() }
+        );
+    }
+
+    #[test]
+    fn flash_tip_on_a_session_switches_without_confirmation() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.apply_sessions(vec![session("geo", false, 3), session("notes", true, 1)]);
         overview.decide(Key::StartHint);
         assert_eq!(overview.decide(Key::Input('g')), Action::None);
         let label = overview.hint_label(1).unwrap().to_owned();
@@ -1312,90 +1156,52 @@ mod tests {
     }
 
     #[test]
-    fn session_layer_dash_does_not_switch_session() {
+    fn touch_current_session_keeps_other_live_sessions() {
         let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("t", false, 2), session("ww", true, 4)]);
-        overview.decide(Key::SpacePrefix);
-        overview.decide(Key::StartHint);
-        assert!(!overview.is_previous_item(0));
-        assert!(!overview.is_previous_item(1));
-        assert_eq!(overview.decide(Key::PreviousTab), Action::None);
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
+        overview.touch_current_session(session("ww", true, 5));
+        assert_eq!(
+            overview
+                .sessions()
+                .iter()
+                .map(|session| (session.name.as_str(), session.tab_count, session.current))
+                .collect::<Vec<_>>(),
+            vec![("ww", 5, true), ("lp", 3, false)]
+        );
     }
 
     #[test]
-    fn pane_layer_dash_focuses_the_previous_pane() {
+    fn dash_always_goes_to_the_previous_tab() {
         let mut overview = Overview::new();
-        overview.apply_panes(vec![
-            pane(3, "nvim", true, false),
-            pane(4, "logs", false, true),
-        ]);
-        overview.set_previous_pane(Some((4, false)));
-        overview.decide(Key::SpacePrefix);
-        overview.decide(Key::PanesLayer);
+        overview.apply_sessions(vec![session("ww", true, 1)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.set_previous_tab_id(Some(1));
+        assert!(!overview.is_previous_item(0));
         assert!(overview.is_previous_item(1));
+        assert_eq!(overview.decide(Key::PreviousTab), Action::PreviousTab);
+    }
+
+    #[test]
+    fn dash_returns_to_the_previous_session_after_a_jump() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.set_previous_session_name(Some("lp".into()));
+        overview.set_previous_tab_id(Some(1));
+        assert!(overview.is_previous_item(1));
+        assert!(!overview.is_previous_item(0));
+        assert!(!overview.is_previous_item(2));
         assert_eq!(
             overview.decide(Key::PreviousTab),
-            Action::FocusPane {
-                id: 4,
-                is_plugin: false,
-                floating: true,
-            }
-        );
-    }
-
-    fn pane(id: u32, title: &str, active: bool, floating: bool) -> PaneFact {
-        PaneFact {
-            id,
-            is_plugin: false,
-            title: title.to_owned(),
-            active,
-            floating,
-        }
-    }
-
-    #[test]
-    fn space_p_enters_the_pane_layer() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
-        overview.apply_panes(vec![
-            pane(3, "nvim", true, false),
-            pane(4, "logs", false, true),
-        ]);
-        assert_eq!(overview.decide(Key::SpacePrefix), Action::None);
-        assert_eq!(overview.decide(Key::PanesLayer), Action::None);
-        assert_eq!(overview.layer(), Layer::Panes);
-        assert_eq!(overview.panes()[overview.cursor()].title, "nvim");
-        assert!(!overview.is_hinting());
-    }
-
-    #[test]
-    fn pane_layer_confirm_focuses_the_selected_pane() {
-        let mut overview = Overview::new();
-        overview.apply_panes(vec![
-            pane(3, "nvim", true, false),
-            pane(4, "logs", false, true),
-        ]);
-        overview.decide(Key::SpacePrefix);
-        overview.decide(Key::PanesLayer);
-        overview.decide(Key::Last);
-        assert_eq!(
-            overview.decide(Key::Confirm),
-            Action::FocusPane {
-                id: 4,
-                is_plugin: false,
-                floating: true,
-            }
+            Action::SwitchSession { name: "lp".into() }
         );
     }
 
     #[test]
-    fn pane_layer_dismisses_back_to_tabs() {
+    fn dismiss_closes_from_the_fused_board() {
         let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
-        overview.apply_panes(vec![pane(3, "nvim", true, false)]);
-        overview.decide(Key::SpacePrefix);
-        overview.decide(Key::PanesLayer);
-        assert_eq!(overview.decide(Key::Dismiss), Action::None);
-        assert_eq!(overview.layer(), Layer::Tabs);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.apply_sessions(vec![session("ww", true, 1)]);
+        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
     }
 }

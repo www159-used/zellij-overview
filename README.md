@@ -2,11 +2,11 @@
 
 English · [中文](docs/zh/README.md)
 
-Browse and switch Zellij sessions, tabs, and panes from a floating window.
+Browse and switch Zellij sessions and tabs from a floating window.
 
-Press `Ctrl+y` to open, move with `hjkl`, and jump with `e`. When there are many items, press `s` to search a title fragment, then press the tip next to a match. `Space` is the layer leader: `s` for sessions, `t` back to tabs, `p` for panes in the current tab.
+Press `Ctrl+y` to open, move with `hjkl`, and jump with `e`. Sessions sit at the front of the same board as the current session's tabs. When there are many items, press `s` to search a title fragment, then press the tip next to a match.
 
-The layout switches between framed cards, compact cards, and a scrolling list based on title length and the floating pane size.
+The layout switches between framed cards, compact cards, and a scrolling column based on title length and the floating pane size.
 
 <video src="asset/open.mov" controls width="720"></video>
 
@@ -32,10 +32,10 @@ mv overview-v*.wasm ~/.config/zellij/plugins/overview.wasm
 ```bash
 git clone https://github.com/www159-used/zellij-overview.git
 cd zellij-overview
-cargo wasm
-mkdir -p ~/.config/zellij/plugins
-cp target/wasm32-wasip1/release/overview.wasm ~/.config/zellij/plugins/
+./scripts/install.sh
 ```
+
+This builds the WASM and copies it to `~/.config/zellij/plugins/overview.wasm`. Override the destination with `OVERVIEW_PLUGIN_PATH`.
 
 ## Keybinding
 
@@ -63,7 +63,7 @@ The footer shows the common keys. Press `?` inside overview for the full help.
 
 1. Press `Ctrl+y` to open overview.
 2. Move the selection with `h` `j` `k` `l` or the arrow keys.
-3. Press `e` or `Enter` to jump to the selected tab, session, or pane.
+3. Press `e` or `Enter` to jump to the selected session or tab.
 
 Movement stops at both ends of the list; it does not wrap. Use `gg` / `G` to jump to the first or last item. In the scrolling list, the camera follows when the cursor leaves the window.
 
@@ -80,52 +80,29 @@ Suppose you have tabs named `notes`, `feature/geo-db`, and `logs`:
 
 `Backspace` deletes the query. `Esc` leaves search and returns to normal mode.
 
-### Three layers: session / tab / pane
+### Sessions and tabs on one board
 
-`Space` is the layer leader. After you press it, the footer becomes `SPACE  s sessions   t tabs   p panes`.
+Live sessions are pinned at the front of the same board as the current session's tabs. There is no layer leader and no pane list.
 
-| Keys | Action |
-| --- | --- |
-| `Space` `s` | Enter the session layer |
-| `Space` `t` | Return to the tab layer |
-| `Space` `p` | Enter the pane layer for the current tab |
-| `Esc` | Cancel the leader without changing layers |
+- Session cards start with `◆` and show that session's tab count. Their frames use a cold border when there is room.
+- Tab cards keep the existing titles and marks.
+- `e` or a Flash tip on a session switches to it; on a tab, it jumps to that tab.
+- The footer shows the current session name.
 
-In normal mode, `s` still starts Flash search. You only enter the session layer after `Space`.
+When the pane is wide enough, everything is framed cards that wrap. When it is too narrow, the board becomes one scrolling column: sessions stay marked `◆`, tabs are indented.
 
-#### Session
-
-<video src="asset/sessions.mov" controls width="720"></video>
-
-1. Press `Space` `s`. The footer shows `SESSIONS`.
-2. Pick a target with `hjkl` or Flash `s`, then press `e` or a tip to switch sessions.
-3. `q` / `Esc` returns to the tab layer. Press it once more to close overview.
-
-The session layer lists live sessions only. Each card shows that session's tab count. WASM has no filesystem, so there is no previous session across overview launches.
-
-#### Pane
-
-<video src="asset/pane.mov" controls width="720"></video>
-
-1. Press `Space` `p`. The footer shows `PANES`.
-2. The list includes selectable, unsuppressed panes in the current tab, and excludes overview itself. Floating panes are marked `float`.
-3. Press `e` or a tip to focus that pane. Overview then closes.
-4. `q` / `Esc` returns to the tab layer.
-
-### Go to the previous item
+### Go to the previous tab
 
 <video src="asset/previous.mov" controls width="720"></video>
 
-A card marked `[-]` is the previously focused tab or pane. Press `-` to jump there.
-
-The previous tab comes from Zellij tab history; the previous pane comes from pane history. The session layer has no reliable previous item yet.
+A card marked `[-]` is where `-` will return. After a tab switch it is the previous tab; after a session jump it is the session you left (Zellij clears that session's tab history when you leave).
 
 ### Status marks
 
 - Purple border or `›`: the keyboard selection
-- `●`: the tab or session you are actually on
-- `[-]`: the tab or pane `-` will return to
-- `float`: a floating pane
+- `●`: the session or tab you are actually on
+- `◆`: a session card
+- `[-]`: the tab or session `-` will return to
 
 ### Adaptive layout
 
@@ -150,14 +127,13 @@ The previous tab comes from Zellij tab history; the previous pane comes from pan
 | `gg` / `G` | First / last item |
 | `zt` / `zz` / `zb` | Align the current item to the top / center / bottom in a scrolling list |
 | `PageDown` / `PageUp` | Full page down / up |
-| `e` / `Enter` | Jump to the selected tab, session, or pane (normal mode) |
-| `Space` | Layer leader; then `s` / `t` / `p` for session / tab / pane |
+| `e` / `Enter` | Jump to the selected session or tab (normal mode) |
 | `s` | Start Flash search |
 | Any character | Query or tip (search mode) |
 | `Backspace` | Delete search input (search mode) |
-| `Esc` | Cancel search or the leader; from the session or pane layer, return to tabs |
-| `-` | Previous tab or pane (normal mode) |
-| `q` / `Esc` | Go back a layer or close overview (normal mode) |
+| `Esc` | Cancel search, or close overview (normal mode) |
+| `-` | Previous tab, or the session you jumped from (normal mode) |
+| `q` / `Esc` | Close overview (normal mode) |
 | `?` | Toggle full help (normal mode; typed as input in search mode) |
 | `Ctrl+y` | Close overview when pressed again |
 

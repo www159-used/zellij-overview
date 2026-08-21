@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
-use overview::{Action, Key, Overview, PaneFact, SessionFact, TabFact};
+use overview::{Action, Key, Overview, SessionFact, TabFact};
 use zellij_tile::prelude::*;
 
 mod floating_state;
@@ -8,6 +10,7 @@ mod floating_state;
 use floating_state::FloatingLayerState;
 
 const PLUGIN_NAME: &str = "overview";
+const PREVIOUS_JUMP_PATH: &str = "/cache/previous";
 
 #[derive(Default)]
 struct State {
@@ -17,8 +20,7 @@ struct State {
     permissions_granted: bool,
     pane_manifest: Option<PaneManifest>,
     floating_layer: FloatingLayerState,
-    active_tab_position: Option<usize>,
-    previous_focused_pane: Option<PaneId>,
+    fetched_sessions: bool,
     /// Snap cursor to the active tab on the first TabUpdate after open.
     pending_initial_cursor: bool,
 }
@@ -53,25 +55,23 @@ impl ZellijPlugin for State {
                         rename_plugin_pane(id, PLUGIN_NAME);
                     }
                     self.close_if_duplicate();
+                    self.refresh_sessions();
+                    self.restore_previous_jump();
                 }
                 true
             }
             Event::PaneUpdate(manifest) => {
                 self.pane_manifest = Some(manifest);
                 self.close_if_duplicate();
-                self.refresh_panes();
-                true
+                false
             }
             Event::TabUpdate(tabs) => {
-                self.active_tab_position =
-                    tabs.iter().find(|tab| tab.active).map(|tab| tab.position);
                 self.overview
                     .apply_tabs(tabs.into_iter().map(tab_fact).collect());
                 if self.pending_initial_cursor {
                     self.overview.reset_cursor_to_active();
                     self.pending_initial_cursor = false;
                 }
-                self.refresh_panes();
                 true
             }
             Event::SessionUpdate(sessions, _) => {
@@ -83,16 +83,17 @@ impl ZellijPlugin for State {
                             .and_then(|history| history.last())
                             .copied()
                     });
-                    self.previous_focused_pane = self.nth_previous_pane(session, 0);
                     self.overview.set_previous_tab_id(previous_tab_id);
-                    self.overview
-                        .set_previous_pane(self.nth_previous_pane(session, 1).map(pane_id_parts));
                     self.floating_layer
                         .capture(self.previous_pane_was_floating(session));
                 }
-                self.overview
-                    .apply_sessions(sessions.into_iter().map(session_fact).collect());
-                self.refresh_panes();
+                if sessions.len() > 1 {
+                    self.overview
+                        .apply_sessions(sessions.into_iter().map(session_fact).collect());
+                } else if let Some(session) = sessions.into_iter().find(|s| s.is_current_session) {
+                    self.overview.touch_current_session(session_fact(session));
+                }
+                self.restore_previous_jump();
                 true
             }
             Event::Key(key) => self.handle_key(key),
@@ -163,7 +164,7 @@ impl State {
     }
 
     fn previous_pane_was_floating(&self, session: &SessionInfo) -> Option<bool> {
-        let previous_pane = self.nth_previous_pane(session, 0)?;
+        let previous_pane = self.nth_previous_pane(session)?;
         session
             .panes
             .panes
@@ -190,11 +191,7 @@ impl State {
         let Some(mapped) = map_key(&key, self.overview.is_hinting()) else {
             return false;
         };
-        let entering_sessions = !self.overview.is_sessions_layer();
         let action = self.overview.decide(mapped);
-        if entering_sessions && self.overview.is_sessions_layer() {
-            self.refresh_sessions();
-        }
         match action {
             Action::None => true,
             Action::Dismiss => {
@@ -212,32 +209,29 @@ impl State {
                 false
             }
             Action::SwitchSession { name } => {
+                let landing_tab = read_previous_jump()
+                    .filter(|jump| jump.session == name)
+                    .and_then(|jump| jump.tab_position);
+                self.remember_current_location();
                 self.dismiss();
-                switch_session(Some(&name));
-                false
-            }
-            Action::FocusPane {
-                id,
-                is_plugin,
-                floating,
-            } => {
-                if !floating {
-                    self.restore_floating_layer();
+                if let Some(tab_position) = landing_tab {
+                    switch_session_with_focus(&name, Some(tab_position), None);
+                } else {
+                    switch_session(Some(&name));
                 }
-                close_self();
-                focus_pane_with_id(host_pane_id(id, is_plugin), floating, false);
                 false
             }
         }
     }
 
     fn refresh_sessions(&mut self) {
-        if !self.permissions_granted {
+        if !self.permissions_granted || self.fetched_sessions {
             return;
         }
         let Ok(snapshot) = get_session_list() else {
             return;
         };
+        self.fetched_sessions = true;
         self.overview.apply_sessions(
             snapshot
                 .live_sessions
@@ -245,36 +239,42 @@ impl State {
                 .map(session_fact)
                 .collect(),
         );
+        self.restore_previous_jump();
     }
 
-    fn refresh_panes(&mut self) {
-        let Some(manifest) = self.pane_manifest.as_ref() else {
+    fn restore_previous_jump(&mut self) {
+        self.overview
+            .set_previous_session_name(read_previous_jump().map(|jump| jump.session));
+    }
+
+    fn remember_current_location(&self) {
+        let Some(session) = self.overview.current_session_name() else {
             return;
         };
-        let tab_position = self.active_tab_position.unwrap_or(0);
-        self.overview.apply_panes(pane_facts(
-            manifest,
-            tab_position,
-            self.own_plugin_id,
-            self.previous_focused_pane,
-        ));
+        write_previous_jump(&PreviousJump {
+            session: session.to_owned(),
+            tab_position: self.overview.active_tab_position(),
+        });
     }
 
-    fn nth_previous_pane(&self, session: &SessionInfo, skip: usize) -> Option<PaneId> {
+    fn nth_previous_pane(&self, session: &SessionInfo) -> Option<PaneId> {
         let own_pane = PaneId::Plugin(self.own_plugin_id?);
         session
             .pane_history
             .get(&self.client_id?)?
             .iter()
             .rev()
-            .filter(|pane_id| **pane_id != own_pane)
-            .nth(skip)
+            .find(|pane_id| **pane_id != own_pane)
             .copied()
     }
 }
 
 fn pane_id(pane: &PaneInfo) -> PaneId {
-    host_pane_id(pane.id, pane.is_plugin)
+    if pane.is_plugin {
+        PaneId::Plugin(pane.id)
+    } else {
+        PaneId::Terminal(pane.id)
+    }
 }
 
 fn write_plugin_lines(lines: &[String]) {
@@ -287,47 +287,6 @@ fn write_plugin_lines(lines: &[String]) {
     print!("{last}");
 }
 
-fn host_pane_id(id: u32, is_plugin: bool) -> PaneId {
-    if is_plugin {
-        PaneId::Plugin(id)
-    } else {
-        PaneId::Terminal(id)
-    }
-}
-
-fn pane_id_parts(pane_id: PaneId) -> (u32, bool) {
-    match pane_id {
-        PaneId::Plugin(id) => (id, true),
-        PaneId::Terminal(id) => (id, false),
-    }
-}
-
-fn pane_facts(
-    manifest: &PaneManifest,
-    tab_position: usize,
-    own_plugin_id: Option<u32>,
-    previous_focused: Option<PaneId>,
-) -> Vec<PaneFact> {
-    manifest
-        .panes
-        .get(&tab_position)
-        .into_iter()
-        .flatten()
-        .filter(|pane| pane.is_selectable && !pane.is_suppressed)
-        .filter(|pane| !(pane.is_plugin && Some(pane.id) == own_plugin_id))
-        .map(|pane| {
-            let id = pane_id(pane);
-            PaneFact {
-                id: pane.id,
-                is_plugin: pane.is_plugin,
-                title: pane.title.clone(),
-                active: previous_focused == Some(id),
-                floating: pane.is_floating,
-            }
-        })
-        .collect()
-}
-
 fn tab_fact(tab: TabInfo) -> TabFact {
     TabFact {
         id: tab.tab_id,
@@ -335,6 +294,43 @@ fn tab_fact(tab: TabInfo) -> TabFact {
         name: tab.name,
         active: tab.active,
     }
+}
+
+struct PreviousJump {
+    session: String,
+    tab_position: Option<usize>,
+}
+
+fn read_previous_jump() -> Option<PreviousJump> {
+    let raw = fs::read_to_string(PREVIOUS_JUMP_PATH).ok()?;
+    parse_previous_jump(&raw)
+}
+
+fn write_previous_jump(jump: &PreviousJump) {
+    let mut raw = jump.session.clone();
+    if let Some(position) = jump.tab_position {
+        raw.push('\n');
+        raw.push_str(&position.to_string());
+    }
+    let _ = fs::create_dir_all(
+        Path::new(PREVIOUS_JUMP_PATH)
+            .parent()
+            .unwrap_or(Path::new("/cache")),
+    );
+    let _ = fs::write(PREVIOUS_JUMP_PATH, raw);
+}
+
+fn parse_previous_jump(raw: &str) -> Option<PreviousJump> {
+    let mut lines = raw.lines();
+    let session = lines.next()?.trim();
+    if session.is_empty() {
+        return None;
+    }
+    let tab_position = lines.next().and_then(|line| line.trim().parse().ok());
+    Some(PreviousJump {
+        session: session.to_owned(),
+        tab_position,
+    })
 }
 
 fn session_fact(session: SessionInfo) -> SessionFact {
@@ -357,9 +353,7 @@ fn map_key(key: &KeyWithModifier, hinting: bool) -> Option<Key> {
             BareKey::Enter if !hinting => Some(Key::Confirm),
             BareKey::Esc => Some(Key::Dismiss),
             BareKey::Backspace if hinting => Some(Key::Backspace),
-            BareKey::Char(' ') if !hinting => Some(Key::SpacePrefix),
             BareKey::Char('s') if !hinting => Some(Key::StartHint),
-            BareKey::Char('p') if !hinting => Some(Key::PanesLayer),
             BareKey::Char(c) if hinting => Some(Key::Input(c)),
             BareKey::Char('z') => Some(Key::ZPrefix),
             BareKey::Char('t') => Some(Key::AlignTop),
