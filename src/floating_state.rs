@@ -1,19 +1,20 @@
 #[derive(Debug, Default)]
 pub(crate) struct FloatingLayerState {
-    /// Pre-open visibility. `None` until a snapshot arrives before this pane is listed.
-    layer_was_visible: Option<bool>,
+    captured: bool,
+    previous_pane_was_floating: bool,
 }
 
 impl FloatingLayerState {
-    pub(crate) fn capture(&mut self, layer_was_visible: Option<bool>) {
-        if self.layer_was_visible.is_some() {
+    pub(crate) fn capture(&mut self, previous_pane_was_floating: Option<bool>) {
+        if self.captured {
             return;
         }
-        self.layer_was_visible = layer_was_visible;
+        self.captured = true;
+        self.previous_pane_was_floating = previous_pane_was_floating.unwrap_or(false);
     }
 
     pub(crate) fn should_hide_on_close(&self) -> bool {
-        self.layer_was_visible == Some(false)
+        !self.previous_pane_was_floating
     }
 }
 
@@ -44,9 +45,15 @@ mod tests {
     }
 
     #[test]
-    fn leaves_the_layer_alone_when_pre_open_visibility_is_unknown() {
+    fn defaults_to_hiding_when_history_is_unavailable() {
         let mut state = FloatingLayerState::default();
         state.capture(None);
-        assert!(!state.should_hide_on_close());
+        assert!(state.should_hide_on_close());
+    }
+
+    #[test]
+    fn hides_when_no_snapshot_arrives_before_close() {
+        let state = FloatingLayerState::default();
+        assert!(state.should_hide_on_close());
     }
 }

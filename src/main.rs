@@ -63,7 +63,6 @@ impl ZellijPlugin for State {
                 true
             }
             Event::TabUpdate(tabs) => {
-                self.capture_floating_layer(&tabs);
                 self.active_tab_position =
                     tabs.iter().find(|tab| tab.active).map(|tab| tab.position);
                 self.overview
@@ -88,7 +87,8 @@ impl ZellijPlugin for State {
                     self.overview.set_previous_tab_id(previous_tab_id);
                     self.overview
                         .set_previous_pane(self.nth_previous_pane(session, 1).map(pane_id_parts));
-                    self.capture_floating_layer(&session.tabs);
+                    self.floating_layer
+                        .capture(self.previous_pane_was_floating(session));
                 }
                 self.overview
                     .apply_sessions(sessions.into_iter().map(session_fact).collect());
@@ -162,15 +162,15 @@ impl State {
         }
     }
 
-    fn capture_floating_layer(&mut self, tabs: &[TabInfo]) {
-        if self.own_pane_is_listed() {
-            return;
-        }
-        let visible = tabs
-            .iter()
-            .find(|tab| tab.active)
-            .map(|tab| tab.are_floating_panes_visible);
-        self.floating_layer.capture(visible);
+    fn previous_pane_was_floating(&self, session: &SessionInfo) -> Option<bool> {
+        let previous_pane = self.nth_previous_pane(session, 0)?;
+        session
+            .panes
+            .panes
+            .values()
+            .flatten()
+            .find(|pane| pane_id(pane) == previous_pane)
+            .map(|pane| pane.is_floating)
     }
 
     fn own_pane_is_listed(&self) -> bool {
