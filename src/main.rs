@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use overview::{Action, Key, Overview, SessionFact, TabFact};
+use overview::{
+    append_usage_log, Action, Key, Overview, SessionFact, TabFact, Usage, UsageEnd, USAGE_CAP,
+};
 use zellij_tile::prelude::*;
 
 mod floating_state;
@@ -11,6 +13,8 @@ use floating_state::FloatingLayerState;
 
 const PLUGIN_NAME: &str = "overview";
 const PREVIOUS_JUMP_PATH: &str = "/cache/previous";
+const SESSION_LAST_PATH: &str = "/cache/session-last";
+const USAGE_PATH: &str = "/cache/usage.jsonl";
 
 #[derive(Default)]
 struct State {
@@ -23,6 +27,7 @@ struct State {
     fetched_sessions: bool,
     /// Snap cursor to the active tab on the first TabUpdate after open.
     pending_initial_cursor: bool,
+    usage: Usage,
 }
 
 register_plugin!(State);
@@ -93,7 +98,6 @@ impl ZellijPlugin for State {
                 } else if let Some(session) = sessions.into_iter().find(|s| s.is_current_session) {
                     self.overview.touch_current_session(session_fact(session));
                 }
-                self.restore_previous_jump();
                 true
             }
             Event::Key(key) => self.handle_key(key),
@@ -145,6 +149,7 @@ impl State {
             .min()
             == Some(own_id);
         if overview_panes.len() > 1 && is_oldest_instance {
+            self.record_usage(UsageEnd::Toggle, false);
             self.restore_floating_layer();
             for pane_id in overview_panes {
                 close_pane_with_id(pane_id);
@@ -191,28 +196,52 @@ impl State {
         let Some(mapped) = map_key(&key, self.overview.is_hinting()) else {
             return false;
         };
+        if is_hjkl(&key) && !self.overview.is_hinting() {
+            self.usage.note_hjkl();
+        }
+        let was_home = self.overview.viewing_session().is_none();
+        self.usage.note(mapped);
         let action = self.overview.decide(mapped);
+        if was_home && self.overview.viewing_session().is_some() {
+            self.usage.note_drill();
+        }
         match action {
-            Action::None => true,
+            Action::None => {
+                if self.overview.needs_session_tabs() {
+                    self.fetch_sessions();
+                }
+                true
+            }
             Action::Dismiss => {
+                self.record_usage(UsageEnd::Dismiss, false);
                 self.dismiss();
                 false
             }
             Action::Commit { tab_index } => {
+                self.forget_previous_session();
+                self.record_usage(UsageEnd::Tab, false);
                 self.dismiss();
                 go_to_tab(tab_index);
                 false
             }
             Action::PreviousTab => {
+                self.forget_previous_session();
+                self.record_usage(UsageEnd::Prev, false);
                 self.dismiss();
                 toggle_tab();
                 false
             }
-            Action::SwitchSession { name } => {
-                let landing_tab = read_previous_jump()
-                    .filter(|jump| jump.session == name)
-                    .and_then(|jump| jump.tab_position);
+            Action::SwitchSession { name, tab_position } => {
+                let landing_tab = tab_position.or_else(|| {
+                    read_previous_jump()
+                        .filter(|jump| jump.session == name)
+                        .and_then(|jump| jump.tab_position)
+                });
                 self.remember_current_location();
+                if let Some(position) = landing_tab {
+                    write_session_last_tab(&name, position);
+                }
+                self.record_usage(UsageEnd::Switch, true);
                 self.dismiss();
                 if let Some(tab_position) = landing_tab {
                     switch_session_with_focus(&name, Some(tab_position), None);
@@ -225,7 +254,14 @@ impl State {
     }
 
     fn refresh_sessions(&mut self) {
-        if !self.permissions_granted || self.fetched_sessions {
+        if self.fetched_sessions {
+            return;
+        }
+        self.fetch_sessions();
+    }
+
+    fn fetch_sessions(&mut self) {
+        if !self.permissions_granted {
             return;
         }
         let Ok(snapshot) = get_session_list() else {
@@ -242,19 +278,47 @@ impl State {
         self.restore_previous_jump();
     }
 
+    fn forget_previous_session(&mut self) {
+        self.overview.set_previous_session_name(None);
+        let _ = fs::remove_file(PREVIOUS_JUMP_PATH);
+    }
+
     fn restore_previous_jump(&mut self) {
-        self.overview
-            .set_previous_session_name(read_previous_jump().map(|jump| jump.session));
+        if let Some(jump) = read_previous_jump() {
+            self.overview
+                .set_previous_session_name(Some(jump.session.clone()));
+            if let Some(position) = jump.tab_position {
+                self.overview.set_session_last_tab(jump.session, position);
+            }
+        }
+        for (name, position) in read_session_last_tabs() {
+            self.overview.set_session_last_tab(name, position);
+        }
+    }
+
+    fn record_usage(&self, end: UsageEnd, cross: bool) {
+        let line = self.usage.encode(end, cross);
+        let existing = fs::read_to_string(USAGE_PATH).unwrap_or_default();
+        let _ = fs::create_dir_all(
+            Path::new(USAGE_PATH)
+                .parent()
+                .unwrap_or(Path::new("/cache")),
+        );
+        let _ = fs::write(USAGE_PATH, append_usage_log(&existing, &line, USAGE_CAP));
     }
 
     fn remember_current_location(&self) {
         let Some(session) = self.overview.current_session_name() else {
             return;
         };
+        let tab_position = self.overview.active_tab_position();
         write_previous_jump(&PreviousJump {
             session: session.to_owned(),
-            tab_position: self.overview.active_tab_position(),
+            tab_position,
         });
+        if let Some(position) = tab_position {
+            write_session_last_tab(session, position);
+        }
     }
 
     fn nth_previous_pane(&self, session: &SessionInfo) -> Option<PaneId> {
@@ -333,12 +397,57 @@ fn parse_previous_jump(raw: &str) -> Option<PreviousJump> {
     })
 }
 
+fn write_session_last_tab(session: &str, position: usize) {
+    let mut tabs = read_session_last_tabs();
+    if let Some(existing) = tabs.iter_mut().find(|(name, _)| name == session) {
+        existing.1 = position;
+    } else {
+        tabs.push((session.to_owned(), position));
+    }
+    let raw = tabs
+        .into_iter()
+        .flat_map(|(name, position)| [name, position.to_string()])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = fs::create_dir_all(
+        Path::new(SESSION_LAST_PATH)
+            .parent()
+            .unwrap_or(Path::new("/cache")),
+    );
+    let _ = fs::write(SESSION_LAST_PATH, raw);
+}
+
+fn read_session_last_tabs() -> Vec<(String, usize)> {
+    let raw = match fs::read_to_string(SESSION_LAST_PATH) {
+        Ok(raw) => raw,
+        Err(_) => return Vec::new(),
+    };
+    let mut tabs = Vec::new();
+    let mut lines = raw.lines();
+    while let Some(name) = lines.next() {
+        let name = name.trim();
+        let Some(position) = lines.next().and_then(|line| line.trim().parse().ok()) else {
+            break;
+        };
+        if !name.is_empty() {
+            tabs.push((name.to_owned(), position));
+        }
+    }
+    tabs
+}
+
 fn session_fact(session: SessionInfo) -> SessionFact {
+    let tabs: Vec<TabFact> = session.tabs.into_iter().map(tab_fact).collect();
     SessionFact {
         name: session.name,
         current: session.is_current_session,
-        tab_count: session.tabs.len(),
+        tab_count: tabs.len(),
+        tabs,
     }
+}
+
+fn is_hjkl(key: &KeyWithModifier) -> bool {
+    key.has_no_modifiers() && matches!(key.bare_key, BareKey::Char('h' | 'j' | 'k' | 'l'))
 }
 
 fn map_key(key: &KeyWithModifier, hinting: bool) -> Option<Key> {

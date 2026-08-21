@@ -5,9 +5,13 @@ mod ansi;
 mod floating_state;
 mod grid;
 mod render;
+mod usage;
+
+use std::collections::BTreeMap;
 
 use ratatui::{layout::Rect, text::Line};
 pub use render::{paint, Frame};
+pub use usage::{append_usage_log, Usage, UsageEnd, USAGE_CAP};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabFact {
@@ -22,6 +26,7 @@ pub struct SessionFact {
     pub name: String,
     pub current: bool,
     pub tab_count: usize,
+    pub tabs: Vec<TabFact>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +65,7 @@ pub enum Action {
     PreviousTab,
     SwitchSession {
         name: String,
+        tab_position: Option<usize>,
     },
 }
 
@@ -87,6 +93,9 @@ struct HintState {
 pub struct Overview {
     tabs: Vec<TabFact>,
     sessions: Vec<SessionFact>,
+    /// `None` is the home board (sessions + current tabs).
+    drilled_session: Option<String>,
+    session_last_tabs: BTreeMap<String, usize>,
     /// Combined board: sessions first, then the current session's tabs.
     cursor: usize,
     previous_tab_id: Option<usize>,
@@ -123,6 +132,13 @@ impl Overview {
         });
         let selected = self.selected_identity();
         self.sessions = sessions;
+        if self
+            .drilled_session
+            .as_ref()
+            .is_some_and(|name| !self.sessions.iter().any(|session| session.name == *name))
+        {
+            self.drilled_session = None;
+        }
         self.reseat_cursor(selected);
         if self.hint.is_some() {
             self.recompute_hint_labels();
@@ -140,8 +156,14 @@ impl Overview {
             .iter_mut()
             .find(|candidate| candidate.name == name)
         {
+            let tabs = if session.tabs.is_empty() {
+                std::mem::take(&mut existing.tabs)
+            } else {
+                session.tabs.clone()
+            };
             *existing = SessionFact {
                 current: true,
+                tabs,
                 ..session
             };
         } else {
@@ -193,6 +215,27 @@ impl Overview {
         self.previous_session_name = name.filter(|name| !name.is_empty());
     }
 
+    pub fn set_session_last_tab(&mut self, session: String, position: usize) {
+        self.session_last_tabs.insert(session, position);
+    }
+
+    pub fn viewing_session(&self) -> Option<&str> {
+        self.drilled_session.as_deref()
+    }
+
+    pub fn needs_session_tabs(&self) -> bool {
+        let Some(name) = self.drilled_session.as_deref() else {
+            return false;
+        };
+        if self.drilled_session_is_current() {
+            return false;
+        }
+        self.sessions
+            .iter()
+            .find(|session| session.name == name)
+            .is_some_and(|session| session.tabs.is_empty())
+    }
+
     pub fn active_tab_position(&self) -> Option<usize> {
         self.tabs
             .iter()
@@ -206,6 +249,17 @@ impl Overview {
     }
 
     pub fn is_previous_item(&self, index: usize) -> bool {
+        if let Some(name) = self.drilled_session.as_deref() {
+            if let Some(position) = self.session_last_tabs.get(name) {
+                return self
+                    .tab_at(index)
+                    .is_some_and(|tab| tab.position == *position);
+            }
+            return self.drilled_session_is_current()
+                && self
+                    .tab_at(index)
+                    .is_some_and(|tab| Some(tab.id) == self.previous_tab_id);
+        }
         if let Some(name) = self.other_previous_session() {
             return self
                 .session_at(index)
@@ -220,7 +274,7 @@ impl Overview {
     }
 
     pub(crate) fn item_is_session(&self, index: usize) -> bool {
-        index < self.sessions.len()
+        self.drilled_session.is_none() && index < self.sessions.len()
     }
 
     pub fn is_hinting(&self) -> bool {
@@ -276,6 +330,9 @@ impl Overview {
     }
 
     pub fn item_count(&self) -> usize {
+        if self.drilled_session.is_some() {
+            return self.viewed_tabs().len();
+        }
         self.sessions.len() + self.tabs.len()
     }
 
@@ -379,6 +436,10 @@ impl Overview {
                 self.reset_cursor_to_active();
                 Action::None
             }
+            Key::Dismiss if self.drilled_session.is_some() => {
+                self.leave_session_board();
+                Action::None
+            }
             Key::Dismiss | Key::Toggle => Action::Dismiss,
             Key::StartHint => {
                 self.hint = Some(HintState {
@@ -434,15 +495,17 @@ impl Overview {
         render::paint(self, rows, cols)
     }
 
-    fn commit_cursor(&self) -> Action {
+    fn commit_cursor(&mut self) -> Action {
         self.commit_index(self.cursor)
     }
 
-    fn commit_previous(&self) -> Action {
-        if let Some(name) = self.other_previous_session() {
-            return Action::SwitchSession {
-                name: name.to_owned(),
-            };
+    fn commit_previous(&mut self) -> Action {
+        if let Some(name) = self.drilled_session.clone() {
+            return self.jump_session_tab(&name, self.session_last_tabs.get(&name).copied());
+        }
+        if let Some(name) = self.other_previous_session().map(str::to_owned) {
+            self.enter_session_board(&name);
+            return Action::None;
         }
         Action::PreviousTab
     }
@@ -455,17 +518,62 @@ impl Overview {
             .map(|session| session.name.as_str())
     }
 
-    fn commit_index(&self, index: usize) -> Action {
-        if let Some(session) = self.session_at(index) {
-            return Action::SwitchSession {
-                name: session.name.clone(),
-            };
+    fn commit_index(&mut self, index: usize) -> Action {
+        if let Some(name) = self.session_at(index).map(|session| session.name.clone()) {
+            self.enter_session_board(&name);
+            return Action::None;
         }
-        self.tab_at(index)
-            .map(|tab| Action::Commit {
-                tab_index: tab.position as u32,
-            })
-            .unwrap_or(Action::Dismiss)
+        let Some(tab) = self.tab_at(index) else {
+            return Action::Dismiss;
+        };
+        let position = tab.position;
+        if let Some(name) = self.drilled_session.clone() {
+            return self.jump_session_tab(&name, Some(position));
+        }
+        Action::Commit {
+            tab_index: position as u32,
+        }
+    }
+
+    fn jump_session_tab(&self, name: &str, tab_position: Option<usize>) -> Action {
+        if self
+            .sessions
+            .iter()
+            .any(|session| session.name == name && session.current)
+        {
+            return tab_position
+                .map(|tab_index| Action::Commit {
+                    tab_index: tab_index as u32,
+                })
+                .unwrap_or(Action::PreviousTab);
+        }
+        Action::SwitchSession {
+            name: name.to_owned(),
+            tab_position,
+        }
+    }
+
+    fn enter_session_board(&mut self, name: &str) {
+        if !self.sessions.iter().any(|session| session.name == name) {
+            return;
+        }
+        self.drilled_session = Some(name.to_owned());
+        self.hint = None;
+        self.pending_g = false;
+        self.pending_z = false;
+        self.scroll_offset = 0;
+        self.reset_cursor_to_active();
+        self.ensure_index_visible(self.cursor);
+    }
+
+    fn leave_session_board(&mut self) {
+        self.drilled_session = None;
+        self.hint = None;
+        self.pending_g = false;
+        self.pending_z = false;
+        self.scroll_offset = 0;
+        self.reset_cursor_to_active();
+        self.ensure_index_visible(self.cursor);
     }
 
     pub(crate) fn layout_plan(&self, area: Rect) -> grid::LayoutPlan {
@@ -551,10 +659,14 @@ impl Overview {
 
     fn index_of(&self, identity: &BoardIdentity) -> Option<usize> {
         match identity {
-            BoardIdentity::Session(name) => self
+            BoardIdentity::Session(name) if self.drilled_session.is_none() => self
                 .sessions
                 .iter()
                 .position(|session| session.name == *name),
+            BoardIdentity::Session(_) => None,
+            BoardIdentity::Tab(id) if self.drilled_session.is_some() => {
+                self.viewed_tabs().iter().position(|tab| tab.id == *id)
+            }
             BoardIdentity::Tab(id) => self
                 .tabs
                 .iter()
@@ -564,14 +676,54 @@ impl Overview {
     }
 
     fn session_at(&self, index: usize) -> Option<&SessionFact> {
+        if self.drilled_session.is_some() {
+            return None;
+        }
         self.sessions.get(index)
     }
 
     fn tab_at(&self, index: usize) -> Option<&TabFact> {
+        if self.drilled_session.is_some() {
+            return self.viewed_tabs().get(index);
+        }
         self.tabs.get(index.checked_sub(self.sessions.len())?)
     }
 
+    fn viewed_tabs(&self) -> &[TabFact] {
+        let Some(name) = self.drilled_session.as_deref() else {
+            return &[];
+        };
+        if self.drilled_session_is_current() {
+            return &self.tabs;
+        }
+        self.sessions
+            .iter()
+            .find(|session| session.name == name)
+            .map(|session| session.tabs.as_slice())
+            .unwrap_or(&[])
+    }
+
+    fn drilled_session_is_current(&self) -> bool {
+        self.drilled_session.as_deref() == self.current_session_name()
+    }
+
     fn active_index(&self) -> Option<usize> {
+        if let Some(name) = self.drilled_session.as_deref() {
+            if let Some(position) = self.session_last_tabs.get(name) {
+                if let Some(index) = self
+                    .viewed_tabs()
+                    .iter()
+                    .position(|tab| tab.position == *position)
+                {
+                    return Some(index);
+                }
+            }
+            return self
+                .viewed_tabs()
+                .iter()
+                .position(|tab| tab.active)
+                .or_else(|| (!self.viewed_tabs().is_empty()).then_some(0));
+        }
         self.tabs
             .iter()
             .position(|tab| tab.active)
@@ -1089,6 +1241,16 @@ mod tests {
             name: name.to_owned(),
             current,
             tab_count,
+            tabs: (0..tab_count)
+                .map(|position| {
+                    tab(
+                        100 + position,
+                        position,
+                        &format!("{name}-{position}"),
+                        false,
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -1113,20 +1275,28 @@ mod tests {
     }
 
     #[test]
-    fn confirm_on_a_session_card_switches_session() {
+    fn confirm_on_a_session_card_opens_its_tabs() {
         let mut overview = Overview::new();
         overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
         overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
         overview.reset_cursor_to_active();
         overview.decide(Key::Left);
+        assert_eq!(overview.decide(Key::Confirm), Action::None);
+        assert_eq!(overview.viewing_session(), Some("lp"));
+        assert_eq!(overview.item_count(), 3);
+        assert_eq!(overview.item_title(0), Some("lp-0"));
+        assert!(!overview.item_is_session(0));
         assert_eq!(
             overview.decide(Key::Confirm),
-            Action::SwitchSession { name: "lp".into() }
+            Action::SwitchSession {
+                name: "lp".into(),
+                tab_position: Some(overview.cursor()),
+            }
         );
     }
 
     #[test]
-    fn flash_tip_on_a_session_switches_without_confirmation() {
+    fn flash_tip_on_a_session_opens_its_tabs() {
         let mut overview = Overview::new();
         overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
         overview.apply_sessions(vec![session("geo", false, 3), session("notes", true, 1)]);
@@ -1135,8 +1305,11 @@ mod tests {
         let label = overview.hint_label(1).unwrap().to_owned();
         assert_eq!(
             overview.decide(Key::Input(label.chars().next().unwrap())),
-            Action::SwitchSession { name: "geo".into() }
+            Action::None
         );
+        assert_eq!(overview.viewing_session(), Some("geo"));
+        assert!(!overview.is_hinting());
+        assert_eq!(overview.item_title(0), Some("geo-0"));
     }
 
     #[test]
@@ -1171,6 +1344,19 @@ mod tests {
     }
 
     #[test]
+    fn dash_uses_the_previous_tab_after_a_same_session_jump() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
+        overview.set_previous_session_name(Some("lp".into()));
+        overview.set_previous_tab_id(Some(2));
+        overview.set_previous_session_name(None);
+        assert!(!overview.is_previous_item(1));
+        assert!(overview.is_previous_item(3));
+        assert_eq!(overview.decide(Key::PreviousTab), Action::PreviousTab);
+    }
+
+    #[test]
     fn dash_always_goes_to_the_previous_tab() {
         let mut overview = Overview::new();
         overview.apply_sessions(vec![session("ww", true, 1)]);
@@ -1191,10 +1377,52 @@ mod tests {
         assert!(overview.is_previous_item(1));
         assert!(!overview.is_previous_item(0));
         assert!(!overview.is_previous_item(2));
+        assert_eq!(overview.decide(Key::PreviousTab), Action::None);
+        assert_eq!(overview.viewing_session(), Some("lp"));
+        assert_eq!(overview.item_title(0), Some("lp-0"));
+        overview.set_session_last_tab("lp".into(), 2);
         assert_eq!(
             overview.decide(Key::PreviousTab),
-            Action::SwitchSession { name: "lp".into() }
+            Action::SwitchSession {
+                name: "lp".into(),
+                tab_position: Some(2),
+            }
         );
+    }
+
+    #[test]
+    fn dash_on_a_session_board_jumps_that_session_last_tab() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.set_session_last_tab("lp".into(), 2);
+        overview.reset_cursor_to_active();
+        overview.decide(Key::Left);
+        assert_eq!(overview.decide(Key::Confirm), Action::None);
+        assert_eq!(overview.viewing_session(), Some("lp"));
+        assert!(overview.is_previous_item(2));
+        assert!(!overview.is_previous_item(0));
+        assert_eq!(
+            overview.decide(Key::PreviousTab),
+            Action::SwitchSession {
+                name: "lp".into(),
+                tab_position: Some(2),
+            }
+        );
+    }
+
+    #[test]
+    fn dismiss_from_a_session_board_returns_home() {
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
+        overview.reset_cursor_to_active();
+        overview.decide(Key::Left);
+        overview.decide(Key::Confirm);
+        assert_eq!(overview.decide(Key::Dismiss), Action::None);
+        assert_eq!(overview.viewing_session(), None);
+        assert_eq!(overview.item_title(0), Some("ww"));
+        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
     }
 
     #[test]

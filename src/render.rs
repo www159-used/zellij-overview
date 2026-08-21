@@ -97,9 +97,9 @@ fn render_help(area: Rect, buffer: &mut Buffer) {
         Line::from("zt / zz / zb       align top / center / bottom"),
         Line::from("s, then query/tip   Flash search / jump"),
         Line::from("Backspace / Esc     delete / cancel search"),
-        Line::from("e / Enter           go to selected session or tab"),
-        Line::from("-                   previous tab"),
-        Line::from("q / Esc / ?         close / close help"),
+        Line::from("e / Enter           open session tabs, or jump"),
+        Line::from("-                   previous tab or session last tab"),
+        Line::from("q / Esc / ?         back or close / close help"),
         Line::from("Ctrl+y              toggle overview (global)"),
     ];
     Paragraph::new(lines).render(inner, buffer);
@@ -120,7 +120,10 @@ fn render_card(
     let match_range = overview.hint_match_range(index);
     let candidate = match_range.is_some() && !overview.hint_query().is_empty();
     let mut spans = Vec::new();
-    if mode == LayoutMode::Scroll && !overview.item_is_session(index) {
+    if mode == LayoutMode::Scroll
+        && overview.viewing_session().is_none()
+        && !overview.item_is_session(index)
+    {
         spans.push(Span::raw("  "));
     }
     if mode != LayoutMode::Framed && overview.cursor() == index {
@@ -336,16 +339,26 @@ fn render_footer(overview: &Overview, area: Rect, buffer: &mut Buffer) {
         ])
     } else {
         let mut spans = Vec::new();
-        if let Some(name) = overview.current_session_name() {
+        if let Some(name) = overview.viewing_session() {
             spans.push(Span::styled(
                 format!(" {name} "),
                 Style::default().fg(TIP_FOREGROUND).bg(SESSION_BORDER),
             ));
-            spans.push(Span::raw("  "));
+            spans.push(Span::raw(
+                "  tabs   s search   e go   - prev   Esc/q back   ? help",
+            ));
+        } else {
+            if let Some(name) = overview.current_session_name() {
+                spans.push(Span::styled(
+                    format!(" {name} "),
+                    Style::default().fg(TIP_FOREGROUND).bg(SESSION_BORDER),
+                ));
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::raw(
+                "hjkl move   s search   e go   - prev   q close   ? help",
+            ));
         }
-        spans.push(Span::raw(
-            "hjkl move   s search   e go   - prev   q close   ? help",
-        ));
         Line::from(spans)
     };
     Paragraph::new(line).render(area, buffer);
@@ -425,11 +438,13 @@ mod tests {
                 name: "dev".into(),
                 current: true,
                 tab_count: 2,
+                tabs: vec![],
             },
             crate::SessionFact {
                 name: "ops".into(),
                 current: false,
                 tab_count: 1,
+                tabs: vec![],
             },
         ]);
         overview.set_previous_tab_id(Some(2));
@@ -546,11 +561,13 @@ mod tests {
                 name: "ww".into(),
                 current: true,
                 tab_count: 4,
+                tabs: vec![],
             },
             crate::SessionFact {
                 name: "lp".into(),
                 current: false,
                 tab_count: 2,
+                tabs: vec![],
             },
         ]);
         let joined = paint(&overview, 12, 60).lines.join("\n");
@@ -571,6 +588,7 @@ mod tests {
             name: "ww".into(),
             current: true,
             tab_count: 20,
+            tabs: vec![],
         }]);
         overview.apply_tabs(
             (0..20)

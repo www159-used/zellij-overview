@@ -4,7 +4,7 @@ English · [中文](docs/zh/README.md)
 
 Browse and switch Zellij sessions and tabs from a floating window.
 
-Press `Ctrl+y` to open, move with `hjkl`, and jump with `e`. Sessions sit at the front of the same board as the current session's tabs. When there are many items, press `s` to search a title fragment, then press the tip next to a match.
+Press `Ctrl+y` to open and move with `hjkl`. Sessions sit at the front of the same board as the current session's tabs. `e` or a Flash tip on a session opens that session's tab board; press again on a tab to jump. Tabs in the current session can be jumped from the home board. When there are many items, press `s` to search the titles on the current board.
 
 The layout switches between framed cards, compact cards, and a scrolling column based on title length and the floating pane size.
 
@@ -63,7 +63,7 @@ The footer shows the common keys. Press `?` inside overview for the full help.
 
 1. Press `Ctrl+y` to open overview.
 2. Move the selection with `h` `j` `k` `l` or the arrow keys.
-3. Press `e` or `Enter` to jump to the selected session or tab.
+3. Press `e` or `Enter` to open the selected session's tabs, or jump to the selected tab.
 
 Movement stops at both ends of the list; it does not wrap. Use `gg` / `G` to jump to the first or last item. In the scrolling list, the camera follows when the cursor leaves the window.
 
@@ -86,8 +86,9 @@ Live sessions are pinned at the front of the same board as the current session's
 
 - Session cards start with `◆` and show that session's tab count. Their frames use a cold border when there is room.
 - Tab cards keep the existing titles and marks.
-- `e` or a Flash tip on a session switches to it; on a tab, it jumps to that tab.
-- The footer shows the current session name.
+- `e` or a Flash tip on a session opens that session's tab board without leaving overview. On a tab it jumps: `go_to_tab` in the current session, or `switch_session_with_focus` in another.
+- Another session's tab board does not list other sessions; `Esc` / `q` first returns home.
+- The footer shows the current session name, or the session you drilled into.
 
 When the pane is wide enough, everything is framed cards that wrap. When it is too narrow, the board becomes one scrolling column: sessions stay marked `◆`, tabs are indented.
 
@@ -95,7 +96,7 @@ When the pane is wide enough, everything is framed cards that wrap. When it is t
 
 <video src="asset/previous.mov" controls width="720"></video>
 
-A card marked `[-]` is where `-` will return. After a tab switch it is the previous tab; after a session jump it is the session you left (Zellij clears that session's tab history when you leave).
+A card marked `[-]` is where `-` will return. In the same session it is the previous tab. After a session jump, home-board `[-]` is the session you left; `-` opens that session's tab board, same as `e`. On that board `[-]` is the session's last tab; `-` again jumps there. After another tab jump in the current session, `-` goes back to that previous tab, not the session you left earlier.
 
 ### Status marks
 
@@ -127,13 +128,13 @@ A card marked `[-]` is where `-` will return. After a tab switch it is the previ
 | `gg` / `G` | First / last item |
 | `zt` / `zz` / `zb` | Align the current item to the top / center / bottom in a scrolling list |
 | `PageDown` / `PageUp` | Full page down / up |
-| `e` / `Enter` | Jump to the selected session or tab (normal mode) |
+| `e` / `Enter` | Open the selected session's tabs, or jump to the selected tab (normal mode) |
 | `s` | Start Flash search |
 | Any character | Query or tip (search mode) |
 | `Backspace` | Delete search input (search mode) |
-| `Esc` | Cancel search, or close overview (normal mode) |
-| `-` | Previous tab, or the session you jumped from (normal mode) |
-| `q` / `Esc` | Close overview (normal mode) |
+| `Esc` | Cancel search; return home from a session tab board; then close overview |
+| `-` | Previous tab in this session; or open the previous session's tab board, then jump to its last tab |
+| `q` / `Esc` | Return home from a session tab board, or close overview |
 | `?` | Toggle full help (normal mode; typed as input in search mode) |
 | `Ctrl+y` | Close overview when pressed again |
 
@@ -153,6 +154,8 @@ zellij -l zellij.kdl
 ```
 
 The development layout loads `target/wasm32-wasip1/release/overview.wasm`. The UI is painted through a Ratatui buffer; the Zellij adapter reads tabs, sessions, and panes and performs the jump.
+
+Closing overview appends one local line to the plugin `/cache/usage.jsonl` (key count, Flash / hjkl / `-` / drill, outcome, cross-session). No titles, no upload, capped at 400 lines. On macOS that file lives under `~/Library/Caches/org.Zellij-Contributors.Zellij`; on Linux under `~/.cache/zellij`. Summarize later with `./scripts/usage-summary.sh`.
 
 ## Release
 

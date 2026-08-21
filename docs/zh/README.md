@@ -4,7 +4,7 @@
 
 在浮动窗口里查看并切换 Zellij 的 session 和 tab。
 
-按 `Ctrl+y` 打开，用 `hjkl` 移动，按 `e` 跳转。session 钉在同一块板最前面，后面是当前 session 的 tab。项多时按 `s` 搜索标题，再按候选项旁的 tip 即可直接跳走。
+按 `Ctrl+y` 打开，用 `hjkl` 移动。session 钉在同一块板最前面，后面是当前 session 的 tab。在 session 上按 `e` 或 Flash tip 会进入该 session 的 tab 板；再按一次才真正跳走。当前 session 的 tab 在首页就能直接跳。项多时按 `s` 搜索当前板上的标题。
 
 界面会按标题长度和浮窗尺寸，在有框卡片、无框紧凑和单列滚动之间切换。
 
@@ -61,7 +61,7 @@ shared {
 
 1. 按 `Ctrl+y` 打开 overview。
 2. 用 `h` `j` `k` `l` 或方向键移动选中框。
-3. 按 `e` 或 `Enter` 跳到选中的 session 或 tab。
+3. 按 `e` 或 `Enter`：在 session 上进入它的 tab 板，在 tab 上跳过去。
 
 撞到列表两端会停住，不会绕回另一头。到头或到尾用 `gg` / `G`。滚动列表里，光标出窗时镜头会跟上。
 
@@ -84,8 +84,9 @@ shared {
 
 - session 卡片以 `◆` 开头，并显示该 session 的 tab 数；够宽时用冷色框。
 - tab 卡片仍是原来的标题和标记。
-- 在 session 上按 `e` 或 Flash tip 会切换 session；在 tab 上则跳到该 tab。
-- footer 显示当前 session 名。
+- 在 session 上按 `e` 或 Flash tip 会进入该 session 的 tab 板，不立刻切走。再在 tab 上按 `e` / tip：当前 session 直接跳，别人的一次落到那个 tab。
+- 别人的 tab 板上没有其它 session 卡；`Esc` / `q` 先回首页。
+- footer 显示当前 session 名；钻进某 session 后显示该 session 名。
 
 够宽时全部是有框卡片并换行。不够宽时整页收成一列滚动：session 仍标 `◆`，tab 缩进一格。
 
@@ -93,7 +94,7 @@ shared {
 
 <video src="../../asset/previous.mov" controls width="720"></video>
 
-标有 `[-]` 的卡片是按 `-` 将返回的位置。同 session 里切 tab 时是上一个 tab；跳到别的 session 之后是你离开的那个 session（Zellij 在离开时会清掉该 session 的 tab 历史）。
+标有 `[-]` 的卡片是按 `-` 将返回的位置。同 session 是上一个 tab。跳走过 session 之后，首页的 `[-]` 在离开的那个 session 上，`-` 先进入它的 tab 板；板上的 `[-]` 才是该 session 上次的 tab，再 `-` 一次落到那里。若之后在当前 session 里又跳过 tab，离开的 session 不再占 `-`，回到上一个 tab。
 
 ### 状态标记
 
@@ -125,13 +126,13 @@ shared {
 | `gg` / `G` | 跳到第一项 / 最后一项 |
 | `zt` / `zz` / `zb` | 滚动列表里把当前项对齐顶部 / 居中 / 底部 |
 | `PageDown` / `PageUp` | 向下 / 向上一页 |
-| `e` / `Enter` | 跳到选中的 session 或 tab（普通模式） |
+| `e` / `Enter` | 打开选中 session 的 tab 板，或跳到选中 tab（普通模式） |
 | `s` | 进入 Flash 搜索 |
 | 任意字符 | 输入查询或 tip（搜索模式） |
 | `Backspace` | 删除搜索输入（搜索模式） |
-| `Esc` | 取消搜索，或关闭 overview（普通模式） |
-| `-` | 返回上一个 tab，或跳走前的 session（普通模式） |
-| `q` / `Esc` | 关闭 overview（普通模式） |
+| `Esc` | 取消搜索；从 session 的 tab 板回首页；再按关闭 overview |
+| `-` | 同 session 回上一个 tab；跨 session 先进入该 session 的 tab 板，再按跳到上次的 tab |
+| `q` / `Esc` | 从 session 的 tab 板回首页，或关闭 overview |
 | `?` | 打开或关闭完整帮助（普通模式；搜索模式下作为输入） |
 | `Ctrl+y` | 再次按下时关闭 overview |
 
@@ -151,6 +152,8 @@ zellij -l zellij.kdl
 ```
 
 开发布局从 `target/wasm32-wasip1/release/overview.wasm` 启动插件。界面由 Ratatui Buffer 渲染，Zellij 适配层负责读 tab / session / pane 并执行跳转。
+
+关掉 overview 时会在插件 `/cache/usage.jsonl` 追加一条本机记录（键次数、Flash / hjkl / `-` / 是否钻进 session 板、结局、是否跨 session）。不记标题，不上传，最多 400 条。macOS 上这份文件在 `~/Library/Caches/org.Zellij-Contributors.Zellij`，Linux 在 `~/.cache/zellij`。之后用 `./scripts/usage-summary.sh` 汇总。
 
 ## 发布
 

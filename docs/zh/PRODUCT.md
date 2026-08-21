@@ -12,34 +12,17 @@
 
 - 一块板：session 卡钉在最前（`◆` + tab 数），后面是**当前** session 的 tab。
 - 够宽用框，中间丢掉框，不够宽一列滚动（session `◆`，tab 缩进）。
-- `s` Flash：搜当前板上的标题，tip 直接跳。
-- `e` / `Enter`：session 卡会 `switch_session`（不带 tab）；当前 tab 会 `go_to_tab`。
-- `-` / `[-]`：同 session 用 Zellij tab 历史；切走过 session 后标离开的 session（`/cache/previous`）。
+- `s` / `e` 两级：落在 session 上只换成该 session 的 tab 板，不离开 overview；再在 tab 上才跳。当前 session 的 tab 在首页就能直接跳。
+- 别人的 tab 用 `switch_session_with_focus`；当前 session 用 `go_to_tab`。
+- 从别人的 tab 板 `Esc` / `q`：先回首页，再按才关。钻进的板不再放其它 session 卡。
+- `-` / `[-]`：同 session 用 Zellij tab 历史。首页 `[-]` 在别人的 session 上时，`-` 和 `e` 一样先进入该 session 的 tab 板；板上的 `[-]` 是该 session 上次的 tab，再 `-` 才跳（`/cache/previous`、`/cache/session-last`）。同 session 里再跳过 tab 后，清掉这份离开的 session，`-` 重新落在上一个 tab。
 - 没有 pane 层，没有 `Space` leader。
-- 打开时拉一次 `get_session_list()`；`SessionUpdate` 只有当前 session 时不冲掉别人。
+- 打开时拉一次 `get_session_list()`；进入缺 tab 的 session 板时再拉；`SessionUpdate` 只有当前 session 时不冲掉别人。
+- 关掉时往 `/cache/usage.jsonl` 追加一条（键次数、Flash / hjkl / `-` / 是否钻进 session 板、结局、是否跨 session）。不记标题，不上传，最多 400 条。macOS 在 `~/Library/Caches/org.Zellij-Contributors.Zellij`，Linux 在 `~/.cache/zellij`。本机 `./scripts/usage-summary.sh` 汇总后再看要不要砍键、要不要打开即搜。
 
 ## 已对齐、未做
 
-### 1. 跨 session 少一跳（当前主痛点）
-
-`s` / `e` 都是两级，**落在 session 上不离开 overview**：
-
-1. 在 session 上 `s` 的 tip 或 `e` → 换成该 session 的 tab 板，不 `switch_session`。
-2. 再在 tab 上 `s` / `e` → 当前 session 用 `go_to_tab`，别人的用 `switch_session_with_focus`。
-
-当前 session 的 tab 仍可直接跳，不必先再选一遍自己。
-
-从别人的 tab 板 `Esc`：先回到原来的板，再按才关。
-
-不把所有 session 的 tab 摊在第一块板上。
-
-### 2. 每个 session 上次的 tab
-
-`/cache` 按 session 记上次 tab。该 session 的 tab 板上标 `[-]`。`-` 和点那张卡的 `e` 一样：一次落到那个 session 的那个 tab。
-
-### 3. 本机用量（决定砍不砍键）
-
-先不砍 `hjkl`。关掉时往 `/cache` 追加一条（按键次数、是否 Flash、是否 hjkl、结局、是否跨 session、是否 `-`）。不记标题，不上传，日志封顶。本机汇总后再看要不要砍键、要不要打开即搜。
+（无。打开即 Flash、砍 `hjkl`、Space 认位置先靠用量再定。）
 
 ## 明确不做（除非以后改口）
 
@@ -59,5 +42,5 @@
 ## 怎样算达到目标
 
 - 人在 `ww`，要去 `lp` 的某个 tab：打开 **一次** overview 就能落到。
-- `Ctrl+y` `-` 能回到上一个工作点（tab，不只是 session 卡）。
+- `Ctrl+y` `-` 先进入离开的 session 的 tab 板，再 `-` 落到上次的 tab。
 - 同 session 里 Flash / `e` 不比现在慢。
