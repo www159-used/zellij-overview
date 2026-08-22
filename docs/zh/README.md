@@ -97,4 +97,4 @@ zellij -l zellij.kdl
 
 ## 许可证
 
-[GNU Affero General Public License v3.0 only](../../LICENSE)。
+[MIT License](../../LICENSE)。
