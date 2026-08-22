@@ -1,0 +1,26 @@
+/* C Mocha：mauve / teal / pink / peach，偏粉雾。
+   用法：覆盖 src/theme.css 后重新编译。只认 :root 里的 --name。 */
+
+:root {
+  /* 焦点：光标框、当前 ●、Flash 已输入 */
+  --focus: #c6a4f0;
+
+  /* session：◆、框、底栏 session 名 */
+  --session: #7ec8be;
+
+  /* 钉：*、框、分隔线、钉上的 session 名 */
+  --pin-mark: #e8a0b4;
+  --pin-border: #d890a4;
+
+  /* Flash：匹配字、候选框 */
+  --match: #e8b090;
+  --match-border: #c89878;
+
+  /* 普通 tab 框 */
+  --card-border: #585b70;
+
+  /* 底栏 / Flash 条 / [-] */
+  --tip-fg: #1e1e2e;
+  --tip-bg: #9fcfc6;
+  --tip-typed: var(--focus);
+}

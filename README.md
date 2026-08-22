@@ -64,6 +64,7 @@ The footer shows the common keys. Press `?` inside overview for the full help.
 1. Press `Ctrl+y` to open overview.
 2. Move the selection with `h` `j` `k` `l` or the arrow keys.
 3. Press `e` or `Enter` to open the selected session's tabs, or jump to the selected tab.
+4. Press `p` on a tab to pin it to the front of the board; press again to unpin. Session cards cannot be pinned. A pin is dropped from cache if that tab is deleted or renamed.
 
 Movement stops at both ends of the list; it does not wrap. Use `gg` / `G` to jump to the first or last item. In the scrolling list, the camera follows when the cursor leaves the window.
 
@@ -82,9 +83,10 @@ Suppose you have tabs named `notes`, `feature/geo-db`, and `logs`:
 
 ### Sessions and tabs on one board
 
-Live sessions are pinned at the front of the same board as the current session's tabs. There is no layer leader and no pane list.
+Pinned tabs sit on their own band at the front, then session cards, then the current session's unpinned tabs. There is no layer leader and no pane list.
 
-- Session cards start with `◆` and show that session's tab count. Their frames use a cold border when there is room.
+- Pinned tabs start with `*` and show the session name after the title, unless the pin is `[-]`. Their frames and mark are rose, with a rose rule under the pin band.
+- Session cards start with `◆` and show that session's tab count. Their frames use a teal border when there is room.
 - Tab cards keep the existing titles and marks.
 - `e` or a Flash tip on a session opens that session's tab board without leaving overview. On a tab it jumps: `go_to_tab` in the current session, or `switch_session_with_focus` in another.
 - Another session's tab board does not list other sessions; `Esc` / `q` first returns home.
@@ -96,13 +98,14 @@ When the pane is wide enough, everything is framed cards that wrap. When it is t
 
 <video src="asset/previous.mov" controls width="720"></video>
 
-A card marked `[-]` is where `-` will return. In the same session it is the previous tab. After a session jump, home-board `[-]` is the session you left; `-` opens that session's tab board, same as `e`. On that board `[-]` is the session's last tab; `-` again jumps there. After another tab jump in the current session, `-` goes back to that previous tab, not the session you left earlier.
+A card marked `[-]` is where `-` will return. In the same session it is the previous tab. After a session jump, home-board `[-]` is the session you left; `-` opens that session's tab board, same as `e`. On that board `[-]` is the session's last tab; `-` again jumps there. If that tab is already pinned on the home board, `[-]` is only on the pin and `-` jumps there in one step. After another tab jump in the current session, `-` goes back to that previous tab, not the session you left earlier.
 
 ### Status marks
 
 - Purple border or `›`: the keyboard selection
 - `●`: the session or tab you are actually on
-- `◆`: a session card
+- `*`: a pinned tab (rose mark and frame; session name after the title, omitted when the pin is `[-]`. `p` toggles; tabs only). Pins sit on their own band above a rose rule
+- `◆`: a session card (teal frame)
 - `[-]`: the tab or session `-` will return to
 
 ### Adaptive layout
@@ -129,6 +132,7 @@ A card marked `[-]` is where `-` will return. In the same session it is the prev
 | `zt` / `zz` / `zb` | Align the current item to the top / center / bottom in a scrolling list |
 | `PageDown` / `PageUp` | Full page down / up |
 | `e` / `Enter` | Open the selected session's tabs, or jump to the selected tab (normal mode) |
+| `p` | Pin or unpin the selected tab (normal mode; not sessions) |
 | `s` | Start Flash search |
 | Any character | Query or tip (search mode) |
 | `Backspace` | Delete search input (search mode) |
@@ -153,7 +157,7 @@ cargo wasm
 zellij -l zellij.kdl
 ```
 
-The development layout loads `target/wasm32-wasip1/release/overview.wasm`. The UI is painted through a Ratatui buffer; the Zellij adapter reads tabs, sessions, and panes and performs the jump.
+The development layout loads `target/wasm32-wasip1/release/overview.wasm`. The UI is painted through a Ratatui buffer; the Zellij adapter reads tabs, sessions, and panes and performs the jump. Colors live in `src/theme.css` (`--focus`, `--session`, `--pin-mark`, …). Defaults are compiled in. To change colors without rebuilding, copy that file to the plugin `/cache/theme.css` (same directory as `pins`; an example is written to `/cache/theme.css.example`), edit the variables you want, and reopen overview.
 
 Closing overview appends one local line to the plugin `/cache/usage.jsonl` (key count, Flash / hjkl / `-` / drill, outcome, cross-session). No titles, no upload, capped at 400 lines. On macOS that file lives under `~/Library/Caches/org.Zellij-Contributors.Zellij`; on Linux under `~/.cache/zellij`. Summarize later with `./scripts/usage-summary.sh`.
 

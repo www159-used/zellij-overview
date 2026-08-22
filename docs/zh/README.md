@@ -4,7 +4,7 @@
 
 在浮动窗口里查看并切换 Zellij 的 session 和 tab。
 
-按 `Ctrl+y` 打开，用 `hjkl` 移动。session 钉在同一块板最前面，后面是当前 session 的 tab。在 session 上按 `e` 或 Flash tip 会进入该 session 的 tab 板；再按一次才真正跳走。当前 session 的 tab 在首页就能直接跳。项多时按 `s` 搜索当前板上的标题。
+按 `Ctrl+y` 打开，用 `hjkl` 移动。钉住的 tab（玫瑰 `*`，带 session 名）单独一行，下面是 session 卡和当前 session 的 tab。在 session 上按 `e` 或 Flash tip 会进入该 session 的 tab 板；再按一次才真正跳走。当前 session 的 tab 在首页就能直接跳。项多时按 `s` 搜索当前板上的标题。
 
 界面会按标题长度和浮窗尺寸，在有框卡片、无框紧凑和单列滚动之间切换。
 
@@ -62,6 +62,7 @@ shared {
 1. 按 `Ctrl+y` 打开 overview。
 2. 用 `h` `j` `k` `l` 或方向键移动选中框。
 3. 按 `e` 或 `Enter`：在 session 上进入它的 tab 板，在 tab 上跳过去。
+4. 在 tab 上按 `p` 钉到板最前；再按取消。session 卡不能钉。tab 删掉或改名后，这颗钉从缓存里丢掉。
 
 撞到列表两端会停住，不会绕回另一头。到头或到尾用 `gg` / `G`。滚动列表里，光标出窗时镜头会跟上。
 
@@ -80,9 +81,10 @@ shared {
 
 ### session 和 tab 在同一块板
 
-活着的 session 钉在最前面，后面是当前 session 的 tab。没有层 leader，也不再列出 pane。
+钉住的 tab 单独一行，下面是 session 卡，再是当前 session 里没钉的 tab。没有层 leader，也不再列出 pane。
 
-- session 卡片以 `◆` 开头，并显示该 session 的 tab 数；够宽时用冷色框。
+- 钉以玫瑰 `*` 开头，标题后跟所属 session；够宽时用玫瑰框，钉区下面一条玫瑰线。
+- session 卡片以 `◆` 开头，并显示该 session 的 tab 数；够宽时用青色框。
 - tab 卡片仍是原来的标题和标记。
 - 在 session 上按 `e` 或 Flash tip 会进入该 session 的 tab 板，不立刻切走。再在 tab 上按 `e` / tip：当前 session 直接跳，别人的一次落到那个 tab。
 - 别人的 tab 板上没有其它 session 卡；`Esc` / `q` 先回首页。
@@ -94,13 +96,14 @@ shared {
 
 <video src="../../asset/previous.mov" controls width="720"></video>
 
-标有 `[-]` 的卡片是按 `-` 将返回的位置。同 session 是上一个 tab。跳走过 session 之后，首页的 `[-]` 在离开的那个 session 上，`-` 先进入它的 tab 板；板上的 `[-]` 才是该 session 上次的 tab，再 `-` 一次落到那里。若之后在当前 session 里又跳过 tab，离开的 session 不再占 `-`，回到上一个 tab。
+标有 `[-]` 的卡片是按 `-` 将返回的位置。同 session 是上一个 tab。跳走过 session 之后，首页的 `[-]` 在离开的那个 session 上，`-` 先进入它的 tab 板；板上的 `[-]` 才是该 session 上次的 tab，再 `-` 一次落到那里。若那张 tab 已经钉在首页，`[-]` 只在钉上，session 卡不再标，`-` 一次跳走。若之后在当前 session 里又跳过 tab，离开的 session 不再占 `-`，回到上一个 tab。
 
 ### 状态标记
 
 - 紫色边框或 `›`：键盘当前选中的项
 - `●`：当前实际所在的 session 或 tab
-- `◆`：session 卡片
+- `*`：钉住的 tab（玫瑰记号和边框；标题后跟所属 session。若这张钉就是 `[-]`，不再写 session。`p` 开关，只钉 tab）。钉和下面的卡分行，中间一条玫瑰线
+- `◆`：session 卡片（青色边框）
 - `[-]`：按 `-` 将返回的 tab 或 session
 
 ### 自适应布局
@@ -127,6 +130,7 @@ shared {
 | `zt` / `zz` / `zb` | 滚动列表里把当前项对齐顶部 / 居中 / 底部 |
 | `PageDown` / `PageUp` | 向下 / 向上一页 |
 | `e` / `Enter` | 打开选中 session 的 tab 板，或跳到选中 tab（普通模式） |
+| `p` | 钉住或取消钉住选中的 tab（普通模式；不能钉 session） |
 | `s` | 进入 Flash 搜索 |
 | 任意字符 | 输入查询或 tip（搜索模式） |
 | `Backspace` | 删除搜索输入（搜索模式） |
@@ -151,7 +155,7 @@ cargo wasm
 zellij -l zellij.kdl
 ```
 
-开发布局从 `target/wasm32-wasip1/release/overview.wasm` 启动插件。界面由 Ratatui Buffer 渲染，Zellij 适配层负责读 tab / session / pane 并执行跳转。
+开发布局从 `target/wasm32-wasip1/release/overview.wasm` 启动插件。界面由 Ratatui Buffer 渲染，Zellij 适配层负责读 tab / session / pane 并执行跳转。颜色在 `src/theme.css`（`--focus`、`--session`、`--pin-mark` …）。默认编进插件。不想改代码：把这份复制到插件 `/cache/theme.css`（和 `pins` 同一目录；打开时会写一份 `/cache/theme.css.example`），只改要覆盖的变量，重开 overview。
 
 关掉 overview 时会在插件 `/cache/usage.jsonl` 追加一条本机记录（键次数、Flash / hjkl / `-` / 是否钻进 session 板、结局、是否跨 session）。不记标题，不上传，最多 400 条。macOS 上这份文件在 `~/Library/Caches/org.Zellij-Contributors.Zellij`，Linux 在 `~/.cache/zellij`。之后用 `./scripts/usage-summary.sh` 汇总。
 

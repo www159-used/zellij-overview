@@ -33,15 +33,12 @@ if [[ ${#logs[@]} -eq 0 ]]; then
   exit 1
 fi
 
-python3 - "${found_roots[0]}" "${logs[@]}" <<'PY'
+python3 - "${logs[@]}" <<'PY'
 import json, sys
 from collections import Counter
 
-root, *paths = sys.argv[1:]
-opens = 0
-keys = 0
-flags = Counter()
-ends = Counter()
+paths = sys.argv[1:]
+rows = []
 for path in paths:
     with open(path, encoding="utf-8") as fh:
         for raw in fh:
@@ -54,24 +51,50 @@ for path in paths:
                 continue
             if any(key in row for key in ("name", "title", "query")):
                 continue
-            opens += 1
-            keys += int(row.get("keys") or 0)
-            for flag in ("flash", "hjkl", "dash", "drill", "cross"):
-                if row.get(flag):
-                    flags[flag] += 1
-            ends[str(row.get("end") or "?")] += 1
+            rows.append(row)
 
 print(f"files  {len(paths)}")
 for path in paths:
     print(f"  {path}")
-print(f"opens  {opens}")
-if opens == 0:
+
+used = [row for row in rows if int(row.get("keys") or 0) > 0]
+empty_toggle = sum(
+    1
+    for row in rows
+    if int(row.get("keys") or 0) == 0 and row.get("end") == "toggle"
+)
+print(f"opens  {len(used)} used   {empty_toggle} empty Ctrl+y")
+if not used:
     raise SystemExit(0)
-print(f"keys   {keys}  avg {keys / opens:.1f}")
-for flag in ("flash", "hjkl", "dash", "drill", "cross"):
-    n = flags[flag]
-    print(f"{flag:6} {n}  {100 * n / opens:.0f}%")
-print("end")
-for name, n in ends.most_common():
-    print(f"  {name:8} {n}  {100 * n / opens:.0f}%")
+
+keys = sum(int(row.get("keys") or 0) for row in used)
+print(f"keys   {keys}  avg {keys / len(used):.1f}")
+
+
+def path(row):
+    steps = []
+    if row.get("flash"):
+        steps.append("flash")
+    if row.get("hjkl"):
+        steps.append("hjkl")
+    if row.get("dash"):
+        steps.append("-")
+    if row.get("drill"):
+        steps.append("drill")
+    end = {
+        "switch": "other session",
+        "tab": "this tab",
+        "prev": "previous tab",
+        "dismiss": "q/esc",
+        "toggle": "ctrl+y",
+    }.get(str(row.get("end") or "?"), str(row.get("end")))
+    steps.append(end)
+    return " → ".join(steps)
+
+
+print("path")
+paths_count = Counter(path(row) for row in used)
+width = max(len(name) for name in paths_count)
+for name, n in paths_count.most_common():
+    print(f"  {name:<{width}}  {n}  {100 * n / len(used):.0f}%")
 PY

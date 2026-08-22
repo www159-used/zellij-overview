@@ -3,7 +3,8 @@ use std::fs;
 use std::path::Path;
 
 use overview::{
-    append_usage_log, Action, Key, Overview, SessionFact, TabFact, Usage, UsageEnd, USAGE_CAP,
+    append_usage_log, apply_theme_overlay, Action, Key, Overview, Pin, SessionFact, TabFact, Usage,
+    UsageEnd, PACKED_THEME_CSS, USAGE_CAP,
 };
 use zellij_tile::prelude::*;
 
@@ -15,6 +16,9 @@ const PLUGIN_NAME: &str = "overview";
 const PREVIOUS_JUMP_PATH: &str = "/cache/previous";
 const SESSION_LAST_PATH: &str = "/cache/session-last";
 const USAGE_PATH: &str = "/cache/usage.jsonl";
+const PINS_PATH: &str = "/cache/pins";
+const THEME_PATH: &str = "/cache/theme.css";
+const THEME_EXAMPLE_PATH: &str = "/cache/theme.css.example";
 
 #[derive(Default)]
 struct State {
@@ -38,6 +42,7 @@ impl ZellijPlugin for State {
         self.own_plugin_id = Some(ids.plugin_id);
         self.client_id = Some(ids.client_id);
         self.pending_initial_cursor = true;
+        load_theme_overlay();
         subscribe(&[
             EventType::TabUpdate,
             EventType::PaneUpdate,
@@ -77,6 +82,8 @@ impl ZellijPlugin for State {
                     self.overview.reset_cursor_to_active();
                     self.pending_initial_cursor = false;
                 }
+                self.remember_current_tab();
+                self.persist_stale_cache();
                 true
             }
             Event::SessionUpdate(sessions, _) => {
@@ -89,6 +96,9 @@ impl ZellijPlugin for State {
                             .copied()
                     });
                     self.overview.set_previous_tab_id(previous_tab_id);
+                    if previous_tab_id.is_some() {
+                        self.forget_previous_session();
+                    }
                     self.floating_layer
                         .capture(self.previous_pane_was_floating(session));
                 }
@@ -98,6 +108,8 @@ impl ZellijPlugin for State {
                 } else if let Some(session) = sessions.into_iter().find(|s| s.is_current_session) {
                     self.overview.touch_current_session(session_fact(session));
                 }
+                self.remember_current_tab();
+                self.persist_stale_cache();
                 true
             }
             Event::Key(key) => self.handle_key(key),
@@ -239,7 +251,8 @@ impl State {
                 });
                 self.remember_current_location();
                 if let Some(position) = landing_tab {
-                    write_session_last_tab(&name, position);
+                    self.overview.set_session_last_tab(name.clone(), position);
+                    write_session_last_tabs(self.overview.session_last_tabs());
                 }
                 self.record_usage(UsageEnd::Switch, true);
                 self.dismiss();
@@ -249,6 +262,10 @@ impl State {
                     switch_session(Some(&name));
                 }
                 false
+            }
+            Action::PersistPins => {
+                write_pins(self.overview.pins());
+                true
             }
         }
     }
@@ -276,6 +293,33 @@ impl State {
                 .collect(),
         );
         self.restore_previous_jump();
+        self.overview.apply_pins(read_pins());
+        self.overview.prune_stale_cache();
+        self.persist_stale_cache();
+    }
+
+    fn persist_stale_cache(&mut self) {
+        let changed = self.overview.take_stale_cache();
+        if changed.pins {
+            write_pins(self.overview.pins());
+        }
+        if changed.previous {
+            let _ = fs::remove_file(PREVIOUS_JUMP_PATH);
+        }
+        if changed.session_last {
+            write_session_last_tabs(self.overview.session_last_tabs());
+        }
+    }
+
+    fn remember_current_tab(&mut self) {
+        let Some(session) = self.overview.current_session_name().map(str::to_owned) else {
+            return;
+        };
+        let Some(position) = self.overview.active_tab_position() else {
+            return;
+        };
+        self.overview.set_session_last_tab(session, position);
+        write_session_last_tabs(self.overview.session_last_tabs());
     }
 
     fn forget_previous_session(&mut self) {
@@ -307,17 +351,18 @@ impl State {
         let _ = fs::write(USAGE_PATH, append_usage_log(&existing, &line, USAGE_CAP));
     }
 
-    fn remember_current_location(&self) {
-        let Some(session) = self.overview.current_session_name() else {
+    fn remember_current_location(&mut self) {
+        let Some(session) = self.overview.current_session_name().map(str::to_owned) else {
             return;
         };
         let tab_position = self.overview.active_tab_position();
         write_previous_jump(&PreviousJump {
-            session: session.to_owned(),
+            session: session.clone(),
             tab_position,
         });
         if let Some(position) = tab_position {
-            write_session_last_tab(session, position);
+            self.overview.set_session_last_tab(session, position);
+            write_session_last_tabs(self.overview.session_last_tabs());
         }
     }
 
@@ -397,16 +442,14 @@ fn parse_previous_jump(raw: &str) -> Option<PreviousJump> {
     })
 }
 
-fn write_session_last_tab(session: &str, position: usize) {
-    let mut tabs = read_session_last_tabs();
-    if let Some(existing) = tabs.iter_mut().find(|(name, _)| name == session) {
-        existing.1 = position;
-    } else {
-        tabs.push((session.to_owned(), position));
+fn write_session_last_tabs(tabs: &BTreeMap<String, usize>) {
+    if tabs.is_empty() {
+        let _ = fs::remove_file(SESSION_LAST_PATH);
+        return;
     }
     let raw = tabs
-        .into_iter()
-        .flat_map(|(name, position)| [name, position.to_string()])
+        .iter()
+        .flat_map(|(name, position)| [name.clone(), position.to_string()])
         .collect::<Vec<_>>()
         .join("\n");
     let _ = fs::create_dir_all(
@@ -446,6 +489,48 @@ fn session_fact(session: SessionInfo) -> SessionFact {
     }
 }
 
+fn load_theme_overlay() {
+    let _ = fs::write(THEME_EXAMPLE_PATH, PACKED_THEME_CSS);
+    let Ok(css) = fs::read_to_string(THEME_PATH) else {
+        return;
+    };
+    if !css.trim().is_empty() {
+        apply_theme_overlay(&css);
+    }
+}
+
+fn write_pins(pins: &[Pin]) {
+    let raw = pins
+        .iter()
+        .flat_map(|pin| [pin.session.as_str(), pin.tab_name.as_str()])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = fs::create_dir_all(Path::new(PINS_PATH).parent().unwrap_or(Path::new("/cache")));
+    let _ = fs::write(PINS_PATH, raw);
+}
+
+fn read_pins() -> Vec<Pin> {
+    let raw = match fs::read_to_string(PINS_PATH) {
+        Ok(raw) => raw,
+        Err(_) => return Vec::new(),
+    };
+    let mut pins = Vec::new();
+    let mut lines = raw.lines();
+    while let Some(session) = lines.next() {
+        let session = session.trim();
+        let Some(tab_name) = lines.next().map(str::trim) else {
+            break;
+        };
+        if !session.is_empty() && !tab_name.is_empty() {
+            pins.push(Pin {
+                session: session.to_owned(),
+                tab_name: tab_name.to_owned(),
+            });
+        }
+    }
+    pins
+}
+
 fn is_hjkl(key: &KeyWithModifier) -> bool {
     key.has_no_modifiers() && matches!(key.bare_key, BareKey::Char('h' | 'j' | 'k' | 'l'))
 }
@@ -476,6 +561,7 @@ fn map_key(key: &KeyWithModifier, hinting: bool) -> Option<Key> {
             BareKey::Char('k') => Some(Key::Up),
             BareKey::Char('l') => Some(Key::Right),
             BareKey::Char('e') => Some(Key::Confirm),
+            BareKey::Char('p') if !hinting => Some(Key::Pin),
             BareKey::Char('-') => Some(Key::PreviousTab),
             _ => None,
         };

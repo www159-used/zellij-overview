@@ -1,0 +1,27 @@
+/* L 齐亮：现在这套色相，强调色都压到同一亮度，让色相自己说话。
+   色相跟现在的 theme.css 一样，只改相对亮度。
+   用法：覆盖 src/theme.css 后重新编译。只认 :root 里的 --name。 */
+
+:root {
+  /* 焦点：光标框、当前 ●、Flash 已输入 */
+  --focus: #b89ee3;
+
+  /* session：◆、框、底栏 session 名 */
+  --session: #3bbcad;
+
+  /* 钉：*、框、分隔线、钉上的 session 名 */
+  --pin-mark: #f7899b;
+  --pin-border: #ed7386;
+
+  /* Flash：匹配字、候选框 */
+  --match: #e19b55;
+  --match-border: #bf915d;
+
+  /* 普通 tab 框 */
+  --card-border: #53596b;
+
+  /* 底栏 / Flash 条 / [-] */
+  --tip-fg: #161a22;
+  --tip-bg: #82b1be;
+  --tip-typed: var(--focus);
+}

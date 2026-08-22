@@ -5,12 +5,14 @@ mod ansi;
 mod floating_state;
 mod grid;
 mod render;
+mod theme;
 mod usage;
 
 use std::collections::BTreeMap;
 
 use ratatui::{layout::Rect, text::Line};
 pub use render::{paint, Frame};
+pub use theme::{apply_theme_overlay, PACKED_THEME_CSS};
 pub use usage::{append_usage_log, Usage, UsageEnd, USAGE_CAP};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +52,7 @@ pub enum Key {
     Dismiss,
     Toggle,
     StartHint,
+    Pin,
     Input(char),
     Backspace,
 }
@@ -67,12 +70,35 @@ pub enum Action {
         name: String,
         tab_position: Option<usize>,
     },
+    PersistPins,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pin {
+    pub session: String,
+    pub tab_name: String,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CachePrune {
+    pub pins: bool,
+    pub previous: bool,
+    pub session_last: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Slot {
+    Pin(usize),
+    Session(usize),
+    LiveTab(usize),
+    SnapTab { session: usize, tab: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BoardIdentity {
     Session(String),
     Tab(usize),
+    Pinned { session: String, name: String },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,7 +122,8 @@ pub struct Overview {
     /// `None` is the home board (sessions + current tabs).
     drilled_session: Option<String>,
     session_last_tabs: BTreeMap<String, usize>,
-    /// Combined board: sessions first, then the current session's tabs.
+    pins: Vec<Pin>,
+    /// Combined board: pins, then sessions, then unpinned current tabs.
     cursor: usize,
     previous_tab_id: Option<usize>,
     previous_session_name: Option<String>,
@@ -106,6 +133,7 @@ pub struct Overview {
     pending_z: bool,
     show_help: bool,
     hint: Option<HintState>,
+    stale_cache: CachePrune,
 }
 
 impl Overview {
@@ -117,6 +145,7 @@ impl Overview {
         tabs.sort_by_key(|t| t.position);
         let selected = self.selected_identity();
         self.tabs = tabs;
+        self.prune_stale_cache();
         self.reseat_cursor(selected);
         if self.hint.is_some() {
             self.recompute_hint_labels();
@@ -139,6 +168,7 @@ impl Overview {
         {
             self.drilled_session = None;
         }
+        self.prune_stale_cache();
         self.reseat_cursor(selected);
         if self.hint.is_some() {
             self.recompute_hint_labels();
@@ -178,6 +208,7 @@ impl Overview {
                 .cmp(&left.current)
                 .then_with(|| left.name.cmp(&right.name))
         });
+        self.prune_stale_cache();
         self.reseat_cursor(selected);
         if self.hint.is_some() {
             self.recompute_hint_labels();
@@ -219,6 +250,120 @@ impl Overview {
         self.session_last_tabs.insert(session, position);
     }
 
+    pub fn apply_pins(&mut self, pins: Vec<Pin>) {
+        let selected = self.selected_identity();
+        self.pins = pins;
+        self.prune_stale_cache();
+        self.reseat_cursor(selected);
+        if self.hint.is_some() {
+            self.recompute_hint_labels();
+        }
+    }
+
+    pub fn session_last_tabs(&self) -> &BTreeMap<String, usize> {
+        &self.session_last_tabs
+    }
+
+    pub fn take_stale_cache(&mut self) -> CachePrune {
+        std::mem::take(&mut self.stale_cache)
+    }
+
+    pub fn prune_stale_cache(&mut self) {
+        let pin_count = self.pins.len();
+        let pins = std::mem::take(&mut self.pins);
+        self.pins = pins
+            .into_iter()
+            .filter(|pin| !self.pin_is_dead(pin))
+            .collect();
+        if self.pins.len() != pin_count {
+            self.stale_cache.pins = true;
+        }
+
+        if let Some(name) = self.previous_session_name.clone() {
+            let alive = self
+                .sessions
+                .iter()
+                .any(|session| session.name == name && !session.current);
+            if !self.sessions.is_empty() && !alive {
+                self.previous_session_name = None;
+                self.stale_cache.previous = true;
+            }
+        }
+
+        let last_count = self.session_last_tabs.len();
+        let last = std::mem::take(&mut self.session_last_tabs);
+        self.session_last_tabs = last
+            .into_iter()
+            .filter(|(name, position)| !self.session_last_is_dead(name, *position))
+            .collect();
+        if self.session_last_tabs.len() != last_count {
+            self.stale_cache.session_last = true;
+        }
+    }
+
+    fn pin_is_dead(&self, pin: &Pin) -> bool {
+        if self.current_session_name() == Some(pin.session.as_str()) && !self.tabs.is_empty() {
+            return self
+                .tabs
+                .iter()
+                .all(|tab| display_name(tab) != pin.tab_name);
+        }
+        match self
+            .sessions
+            .iter()
+            .find(|session| session.name == pin.session)
+        {
+            None => !self.sessions.is_empty(),
+            Some(session) => {
+                if session.tabs.is_empty() {
+                    return false;
+                }
+                session
+                    .tabs
+                    .iter()
+                    .all(|tab| display_name(tab) != pin.tab_name)
+            }
+        }
+    }
+
+    fn session_last_is_dead(&self, name: &str, position: usize) -> bool {
+        if self.sessions.is_empty() {
+            return false;
+        }
+        let Some(session) = self.sessions.iter().find(|session| session.name == name) else {
+            return true;
+        };
+        if session.current && !self.tabs.is_empty() {
+            return position >= self.tabs.len();
+        }
+        if !session.tabs.is_empty() {
+            return position >= session.tabs.len();
+        }
+        session.tab_count > 0 && position >= session.tab_count
+    }
+
+    pub fn pins(&self) -> &[Pin] {
+        &self.pins
+    }
+
+    pub fn item_is_pinned(&self, index: usize) -> bool {
+        matches!(self.slot(index), Some(Slot::Pin(_)))
+    }
+
+    pub fn pin_count(&self) -> usize {
+        self.slots()
+            .iter()
+            .take_while(|slot| matches!(slot, Slot::Pin(_)))
+            .count()
+    }
+
+    pub(crate) fn item_pin_session(&self, index: usize) -> Option<&str> {
+        if !self.item_is_pinned(index) || self.is_previous_item(index) {
+            return None;
+        }
+        self.item_session_name(index)
+    }
+
     pub fn viewing_session(&self) -> Option<&str> {
         self.drilled_session.as_deref()
     }
@@ -250,17 +395,20 @@ impl Overview {
 
     pub fn is_previous_item(&self, index: usize) -> bool {
         if let Some(name) = self.drilled_session.as_deref() {
-            if let Some(position) = self.session_last_tabs.get(name) {
+            if self.drilled_session_is_current() {
                 return self
                     .tab_at(index)
-                    .is_some_and(|tab| tab.position == *position);
-            }
-            return self.drilled_session_is_current()
-                && self
-                    .tab_at(index)
                     .is_some_and(|tab| Some(tab.id) == self.previous_tab_id);
+            }
+            return self.session_last_tabs.get(name).is_some_and(|position| {
+                self.tab_at(index)
+                    .is_some_and(|tab| tab.position == *position)
+            });
         }
         if let Some(name) = self.other_previous_session() {
+            if let Some(pin) = self.previous_session_pin_index(name) {
+                return index == pin;
+            }
             return self
                 .session_at(index)
                 .is_some_and(|session| session.name == name);
@@ -274,7 +422,7 @@ impl Overview {
     }
 
     pub(crate) fn item_is_session(&self, index: usize) -> bool {
-        self.drilled_session.is_none() && index < self.sessions.len()
+        matches!(self.slot(index), Some(Slot::Session(_)))
     }
 
     pub fn is_hinting(&self) -> bool {
@@ -330,10 +478,7 @@ impl Overview {
     }
 
     pub fn item_count(&self) -> usize {
-        if self.drilled_session.is_some() {
-            return self.viewed_tabs().len();
-        }
-        self.sessions.len() + self.tabs.len()
+        self.slots().len()
     }
 
     pub(crate) fn item_tab_count(&self, index: usize) -> Option<usize> {
@@ -431,6 +576,13 @@ impl Overview {
             }
             Key::Confirm => self.commit_cursor(),
             Key::PreviousTab => self.commit_previous(),
+            Key::Pin => {
+                if self.toggle_pin_at_cursor() {
+                    Action::PersistPins
+                } else {
+                    Action::None
+                }
+            }
             Key::Dismiss if self.is_hinting() => {
                 self.hint = None;
                 self.reset_cursor_to_active();
@@ -504,10 +656,26 @@ impl Overview {
             return self.jump_session_tab(&name, self.session_last_tabs.get(&name).copied());
         }
         if let Some(name) = self.other_previous_session().map(str::to_owned) {
+            if let Some(position) = self.session_last_tabs.get(&name).copied() {
+                if self.previous_session_pin_index(&name).is_some() {
+                    return self.jump_session_tab(&name, Some(position));
+                }
+            }
             self.enter_session_board(&name);
             return Action::None;
         }
         Action::PreviousTab
+    }
+
+    fn previous_session_pin_index(&self, session: &str) -> Option<usize> {
+        let position = *self.session_last_tabs.get(session)?;
+        (0..self.item_count()).find(|&index| {
+            self.item_is_pinned(index)
+                && self.item_session_name(index) == Some(session)
+                && self
+                    .tab_at(index)
+                    .is_some_and(|tab| tab.position == position)
+        })
     }
 
     fn other_previous_session(&self) -> Option<&str> {
@@ -527,12 +695,49 @@ impl Overview {
             return Action::Dismiss;
         };
         let position = tab.position;
-        if let Some(name) = self.drilled_session.clone() {
-            return self.jump_session_tab(&name, Some(position));
+        match self.item_session_name(index).map(str::to_owned) {
+            Some(session) => self.jump_session_tab(&session, Some(position)),
+            None => Action::Commit {
+                tab_index: position as u32,
+            },
         }
-        Action::Commit {
-            tab_index: position as u32,
+    }
+
+    fn toggle_pin_at_cursor(&mut self) -> bool {
+        let Some(session) = self.item_session_name(self.cursor).map(str::to_owned) else {
+            return false;
+        };
+        if self.session_at(self.cursor).is_some() {
+            return false;
         }
+        let Some(name) = self
+            .tab_at(self.cursor)
+            .map(display_name)
+            .map(str::to_owned)
+        else {
+            return false;
+        };
+        let selected = BoardIdentity::Pinned {
+            session: session.clone(),
+            name: name.clone(),
+        };
+        if let Some(index) = self
+            .pins
+            .iter()
+            .position(|pin| pin.session == session && pin.tab_name == name)
+        {
+            self.pins.remove(index);
+        } else {
+            self.pins.push(Pin {
+                session,
+                tab_name: name,
+            });
+        }
+        self.reseat_cursor(Some(selected));
+        if self.hint.is_some() {
+            self.recompute_hint_labels();
+        }
+        true
     }
 
     fn jump_session_tab(&self, name: &str, tab_position: Option<usize>) -> Action {
@@ -577,7 +782,12 @@ impl Overview {
     }
 
     pub(crate) fn layout_plan(&self, area: Rect) -> grid::LayoutPlan {
-        grid::LayoutPlan::calculate(&self.item_widths(), area, self.scroll_offset)
+        grid::LayoutPlan::calculate_with_pins(
+            &self.item_widths(),
+            area,
+            self.scroll_offset,
+            self.pin_count(),
+        )
     }
 
     fn current_layout_plan(&self) -> grid::LayoutPlan {
@@ -636,7 +846,18 @@ impl Overview {
                     .item_tab_count(index)
                     .map(|count| SESSION_MARK_WIDTH + 2 + count.to_string().len())
                     .unwrap_or(0);
-                title_width + active_width + previous_width + session_width + 2
+                let pin_width = usize::from(self.item_is_pinned(index)) * PIN_MARK_WIDTH;
+                let pin_session_width = self
+                    .item_pin_session(index)
+                    .map(|name| 2 + name.len())
+                    .unwrap_or(0);
+                title_width
+                    + active_width
+                    + previous_width
+                    + session_width
+                    + pin_width
+                    + pin_session_width
+                    + 2
             })
             .collect()
     }
@@ -653,54 +874,136 @@ impl Overview {
         if let Some(session) = self.session_at(self.cursor) {
             return Some(BoardIdentity::Session(session.name.clone()));
         }
+        if self.item_is_pinned(self.cursor) {
+            let session = self.item_session_name(self.cursor)?.to_owned();
+            let name = self.tab_at(self.cursor).map(display_name)?.to_owned();
+            return Some(BoardIdentity::Pinned { session, name });
+        }
         self.tab_at(self.cursor)
             .map(|tab| BoardIdentity::Tab(tab.id))
     }
 
     fn index_of(&self, identity: &BoardIdentity) -> Option<usize> {
         match identity {
-            BoardIdentity::Session(name) if self.drilled_session.is_none() => self
-                .sessions
-                .iter()
-                .position(|session| session.name == *name),
-            BoardIdentity::Session(_) => None,
-            BoardIdentity::Tab(id) if self.drilled_session.is_some() => {
-                self.viewed_tabs().iter().position(|tab| tab.id == *id)
-            }
-            BoardIdentity::Tab(id) => self
-                .tabs
-                .iter()
-                .position(|tab| tab.id == *id)
-                .map(|index| self.sessions.len() + index),
+            BoardIdentity::Session(name) => (0..self.item_count()).find(|&index| {
+                self.session_at(index)
+                    .is_some_and(|session| session.name == *name)
+            }),
+            BoardIdentity::Pinned { session, name } => (0..self.item_count()).find(|&index| {
+                self.item_is_pinned(index)
+                    && self.item_session_name(index) == Some(session.as_str())
+                    && self
+                        .tab_at(index)
+                        .is_some_and(|tab| display_name(tab) == name)
+            }),
+            BoardIdentity::Tab(id) => (0..self.item_count())
+                .find(|&index| self.tab_at(index).is_some_and(|tab| tab.id == *id)),
         }
     }
 
     fn session_at(&self, index: usize) -> Option<&SessionFact> {
-        if self.drilled_session.is_some() {
-            return None;
+        match self.slot(index)? {
+            Slot::Session(session) => self.sessions.get(session),
+            _ => None,
         }
-        self.sessions.get(index)
     }
 
     fn tab_at(&self, index: usize) -> Option<&TabFact> {
-        if self.drilled_session.is_some() {
-            return self.viewed_tabs().get(index);
+        match self.slot(index)? {
+            Slot::Pin(pin) => self.resolve_pin(&self.pins[pin]),
+            Slot::LiveTab(tab) => self.tabs.get(tab),
+            Slot::SnapTab { session, tab } => self.sessions.get(session)?.tabs.get(tab),
+            Slot::Session(_) => None,
         }
-        self.tabs.get(index.checked_sub(self.sessions.len())?)
     }
 
-    fn viewed_tabs(&self) -> &[TabFact] {
-        let Some(name) = self.drilled_session.as_deref() else {
-            return &[];
-        };
+    fn item_session_name(&self, index: usize) -> Option<&str> {
+        match self.slot(index)? {
+            Slot::Pin(pin) => Some(self.pins[pin].session.as_str()),
+            Slot::Session(session) => Some(self.sessions[session].name.as_str()),
+            Slot::LiveTab(_) => self.current_session_name(),
+            Slot::SnapTab { session, .. } => Some(self.sessions[session].name.as_str()),
+        }
+    }
+
+    fn slot(&self, index: usize) -> Option<Slot> {
+        self.slots().get(index).copied()
+    }
+
+    fn slots(&self) -> Vec<Slot> {
+        if let Some(name) = self.drilled_session.as_deref() {
+            return self.drilled_slots(name);
+        }
+        let mut slots = Vec::new();
+        for (index, pin) in self.pins.iter().enumerate() {
+            if self.resolve_pin(pin).is_some() {
+                slots.push(Slot::Pin(index));
+            }
+        }
+        for index in 0..self.sessions.len() {
+            slots.push(Slot::Session(index));
+        }
+        let current = self.current_session_name().unwrap_or("");
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if !self.is_pinned_name(current, display_name(tab)) {
+                slots.push(Slot::LiveTab(index));
+            }
+        }
+        slots
+    }
+
+    fn drilled_slots(&self, name: &str) -> Vec<Slot> {
+        let mut slots = Vec::new();
+        for (index, pin) in self.pins.iter().enumerate() {
+            if pin.session == name && self.resolve_pin(pin).is_some() {
+                slots.push(Slot::Pin(index));
+            }
+        }
         if self.drilled_session_is_current() {
-            return &self.tabs;
+            for (index, tab) in self.tabs.iter().enumerate() {
+                if !self.is_pinned_name(name, display_name(tab)) {
+                    slots.push(Slot::LiveTab(index));
+                }
+            }
+            return slots;
+        }
+        let Some(session) = self
+            .sessions
+            .iter()
+            .position(|session| session.name == name)
+        else {
+            return slots;
+        };
+        for (tab, fact) in self.sessions[session].tabs.iter().enumerate() {
+            if !self.is_pinned_name(name, display_name(fact)) {
+                slots.push(Slot::SnapTab { session, tab });
+            }
+        }
+        slots
+    }
+
+    fn resolve_pin(&self, pin: &Pin) -> Option<&TabFact> {
+        if self.current_session_name() == Some(pin.session.as_str()) {
+            return self
+                .tabs
+                .iter()
+                .find(|tab| display_name(tab) == pin.tab_name);
         }
         self.sessions
             .iter()
-            .find(|session| session.name == name)
-            .map(|session| session.tabs.as_slice())
-            .unwrap_or(&[])
+            .find(|session| session.name == pin.session)
+            .and_then(|session| {
+                session
+                    .tabs
+                    .iter()
+                    .find(|tab| display_name(tab) == pin.tab_name)
+            })
+    }
+
+    fn is_pinned_name(&self, session: &str, tab_name: &str) -> bool {
+        self.pins
+            .iter()
+            .any(|pin| pin.session == session && pin.tab_name == tab_name)
     }
 
     fn drilled_session_is_current(&self) -> bool {
@@ -709,26 +1012,30 @@ impl Overview {
 
     fn active_index(&self) -> Option<usize> {
         if let Some(name) = self.drilled_session.as_deref() {
-            if let Some(position) = self.session_last_tabs.get(name) {
-                if let Some(index) = self
-                    .viewed_tabs()
-                    .iter()
-                    .position(|tab| tab.position == *position)
-                {
+            if self.drilled_session_is_current() {
+                if let Some(id) = self.previous_tab_id {
+                    if let Some(index) = self.index_of(&BoardIdentity::Tab(id)) {
+                        return Some(index);
+                    }
+                }
+            } else if let Some(position) = self.session_last_tabs.get(name) {
+                if let Some(index) = (0..self.item_count()).find(|&index| {
+                    self.tab_at(index)
+                        .is_some_and(|tab| tab.position == *position)
+                }) {
                     return Some(index);
                 }
             }
-            return self
-                .viewed_tabs()
-                .iter()
-                .position(|tab| tab.active)
-                .or_else(|| (!self.viewed_tabs().is_empty()).then_some(0));
+            return (0..self.item_count())
+                .find(|&index| self.tab_at(index).is_some_and(|tab| tab.active))
+                .or_else(|| (self.item_count() > 0).then_some(0));
         }
-        self.tabs
-            .iter()
-            .position(|tab| tab.active)
-            .map(|index| self.sessions.len() + index)
-            .or_else(|| self.sessions.iter().position(|session| session.current))
+        (0..self.item_count())
+            .find(|&index| !self.item_is_session(index) && self.item_is_active(index))
+            .or_else(|| {
+                (0..self.item_count())
+                    .find(|&index| self.item_is_session(index) && self.item_is_active(index))
+            })
     }
 
     fn apply_hint_input(&mut self, ch: char) -> Action {
@@ -836,6 +1143,7 @@ pub(crate) fn content_rows(rows: usize) -> usize {
 
 const HINT_ALPHABET: &[u8] = b"asdfghjklqwertyuiopzxcvbnm";
 const SESSION_MARK_WIDTH: usize = 2;
+const PIN_MARK_WIDTH: usize = 2;
 
 fn labels_for(count: usize, alphabet: &[u8]) -> Vec<String> {
     if count == 0 {
@@ -1313,6 +1621,145 @@ mod tests {
     }
 
     #[test]
+    fn pin_moves_a_tab_to_the_front_and_does_not_pin_sessions() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
+        overview.reset_cursor_to_active();
+        assert_eq!(overview.item_title(overview.cursor()), Some("notes"));
+        assert_eq!(overview.decide(Key::Pin), Action::PersistPins);
+        assert_eq!(overview.item_title(0), Some("notes"));
+        assert!(overview.item_is_pinned(0));
+        assert_eq!(overview.item_title(1), Some("ww"));
+        assert_eq!(overview.item_title(3), Some("logs"));
+        assert_eq!(overview.item_count(), 4);
+        overview.decide(Key::Down);
+        assert_eq!(overview.decide(Key::Pin), Action::None);
+        assert_eq!(overview.pins().len(), 1);
+        overview.decide(Key::Up);
+        assert_eq!(overview.decide(Key::Pin), Action::PersistPins);
+        assert!(!overview.item_is_pinned(0));
+        assert_eq!(overview.item_title(2), Some("notes"));
+    }
+
+    #[test]
+    fn pinned_foreign_tab_sits_first_and_jumps() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.apply_pins(vec![Pin {
+            session: "lp".into(),
+            tab_name: "lp-1".into(),
+        }]);
+        assert_eq!(overview.item_title(0), Some("lp-1"));
+        assert!(overview.item_is_pinned(0));
+        assert_eq!(overview.pin_count(), 1);
+        assert_eq!(overview.item_pin_session(0), Some("lp"));
+        assert_eq!(overview.item_title(1), Some("ww"));
+        overview.decide(Key::GoPrefix);
+        overview.decide(Key::GoPrefix);
+        assert_eq!(
+            overview.decide(Key::Confirm),
+            Action::SwitchSession {
+                name: "lp".into(),
+                tab_position: Some(1),
+            }
+        );
+    }
+
+    #[test]
+    fn session_board_only_shows_its_own_pins() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.apply_pins(vec![
+            Pin {
+                session: "ww".into(),
+                tab_name: "notes".into(),
+            },
+            Pin {
+                session: "lp".into(),
+                tab_name: "lp-2".into(),
+            },
+        ]);
+        assert_eq!(overview.item_title(0), Some("notes"));
+        overview.decide(Key::Last);
+        overview.decide(Key::Confirm);
+        assert_eq!(overview.viewing_session(), Some("lp"));
+        assert_eq!(overview.item_title(0), Some("lp-2"));
+        assert!(overview.item_is_pinned(0));
+        assert_eq!(overview.item_title(1), Some("lp-0"));
+        assert_ne!(overview.item_title(0), Some("notes"));
+    }
+
+    #[test]
+    fn unmatched_pins_are_dropped() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("ww", true, 1)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.apply_pins(vec![Pin {
+            session: "gone".into(),
+            tab_name: "old".into(),
+        }]);
+        assert_eq!(overview.item_title(0), Some("ww"));
+        assert!(!overview.item_is_pinned(0));
+        assert!(overview.pins().is_empty());
+        assert!(overview.take_stale_cache().pins);
+    }
+
+    #[test]
+    fn deleted_tab_drops_its_pin() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("ww", true, 2)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
+        overview.apply_pins(vec![Pin {
+            session: "ww".into(),
+            tab_name: "logs".into(),
+        }]);
+        assert_eq!(overview.pins().len(), 1);
+        overview.take_stale_cache();
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        assert!(overview.pins().is_empty());
+        assert!(overview.take_stale_cache().pins);
+    }
+
+    #[test]
+    fn foreign_pin_stays_until_that_session_tabs_are_known() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![SessionFact {
+            name: "lp".into(),
+            current: false,
+            tab_count: 3,
+            tabs: vec![],
+        }]);
+        overview.apply_pins(vec![Pin {
+            session: "lp".into(),
+            tab_name: "lp-2".into(),
+        }]);
+        assert_eq!(overview.pins().len(), 1);
+        overview.apply_sessions(vec![session("lp", false, 3)]);
+        assert_eq!(overview.pins().len(), 1);
+        overview.apply_sessions(vec![session("lp", false, 2)]);
+        assert!(overview.pins().is_empty());
+    }
+
+    #[test]
+    fn stale_previous_and_session_last_are_dropped() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.set_previous_session_name(Some("lp".into()));
+        overview.set_session_last_tab("lp".into(), 2);
+        overview.set_session_last_tab("gone".into(), 0);
+        overview.prune_stale_cache();
+        assert_eq!(overview.session_last_tabs().get("lp"), Some(&2));
+        assert!(!overview.session_last_tabs().contains_key("gone"));
+        overview.apply_sessions(vec![session("ww", true, 1)]);
+        assert!(overview.take_stale_cache().previous);
+        assert!(!overview.session_last_tabs().contains_key("lp"));
+    }
+
+    #[test]
     fn apply_sessions_replaces_with_the_live_snapshot() {
         let mut overview = Overview::new();
         overview.apply_sessions(vec![session("t", false, 2), session("ww", true, 4)]);
@@ -1344,6 +1791,19 @@ mod tests {
     }
 
     #[test]
+    fn current_session_board_uses_zellij_previous_tab() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("ww", true, 2)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
+        overview.set_session_last_tab("ww".into(), 0);
+        overview.set_previous_tab_id(Some(2));
+        assert_eq!(overview.decide(Key::Confirm), Action::None);
+        assert_eq!(overview.viewing_session(), Some("ww"));
+        assert!(!overview.is_previous_item(0));
+        assert!(overview.is_previous_item(1));
+    }
+
+    #[test]
     fn dash_uses_the_previous_tab_after_a_same_session_jump() {
         let mut overview = Overview::new();
         overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
@@ -1365,6 +1825,47 @@ mod tests {
         assert!(!overview.is_previous_item(0));
         assert!(overview.is_previous_item(1));
         assert_eq!(overview.decide(Key::PreviousTab), Action::PreviousTab);
+    }
+
+    #[test]
+    fn pinned_previous_tab_keeps_the_dash_mark() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("ww", true, 2)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
+        overview.apply_pins(vec![Pin {
+            session: "ww".into(),
+            tab_name: "logs".into(),
+        }]);
+        overview.set_previous_tab_id(Some(2));
+        assert!(overview.item_is_pinned(0));
+        assert!(overview.is_previous_item(0));
+        assert!(!overview.is_previous_item(1));
+        assert_eq!(overview.item_pin_session(0), None);
+    }
+
+    #[test]
+    fn dash_jumps_a_pinned_previous_session_tab() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
+        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
+        overview.apply_pins(vec![Pin {
+            session: "lp".into(),
+            tab_name: "lp-2".into(),
+        }]);
+        overview.set_previous_session_name(Some("lp".into()));
+        overview.set_session_last_tab("lp".into(), 2);
+        assert_eq!(overview.item_title(0), Some("lp-2"));
+        assert_eq!(overview.item_title(2), Some("lp"));
+        assert!(overview.is_previous_item(0));
+        assert!(!overview.is_previous_item(2));
+        assert_eq!(overview.item_pin_session(0), None);
+        assert_eq!(
+            overview.decide(Key::PreviousTab),
+            Action::SwitchSession {
+                name: "lp".into(),
+                tab_position: Some(2),
+            }
+        );
     }
 
     #[test]

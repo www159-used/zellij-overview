@@ -1,0 +1,26 @@
+/* B 港夜：蓝紫焦点 + 钢青 session，钉是闷珊瑚，底栏跟 session 一家。
+   用法：覆盖 src/theme.css 后重新编译。只认 :root 里的 --name。 */
+
+:root {
+  /* 焦点：光标框、当前 ●、Flash 已输入 */
+  --focus: #9aa8e8;
+
+  /* session：◆、框、底栏 session 名 */
+  --session: #6ab0c4;
+
+  /* 钉：*、框、分隔线、钉上的 session 名 */
+  --pin-mark: #d88888;
+  --pin-border: #c87878;
+
+  /* Flash：匹配字、候选框 */
+  --match: #d0b078;
+  --match-border: #b49864;
+
+  /* 普通 tab 框 */
+  --card-border: #4a5162;
+
+  /* 底栏 / Flash 条 / [-] */
+  --tip-fg: #12151c;
+  --tip-bg: #8aadc0;
+  --tip-typed: var(--focus);
+}

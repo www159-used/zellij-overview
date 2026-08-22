@@ -8,19 +8,12 @@ use ratatui::{
 
 use crate::{
     grid::{LayoutMode, LayoutPlan},
+    theme::theme,
     Overview,
 };
 
-const MATCH_COLOR: Color = Color::Rgb(255, 184, 108);
 const CARD_FOREGROUND: Color = Color::Reset;
-const CARD_BORDER: Color = Color::Rgb(90, 96, 114);
-const MATCH_BORDER: Color = Color::Rgb(80, 160, 255);
-const SESSION_BORDER: Color = Color::Rgb(80, 200, 186);
-const FOCUS_BORDER: Color = Color::Rgb(189, 147, 249);
 const SESSION_MARK: &str = "◆ ";
-const TIP_FOREGROUND: Color = Color::Rgb(16, 19, 26);
-const TIP_BACKGROUND: Color = Color::Rgb(139, 233, 253);
-const TIP_TYPED: Color = FOCUS_BORDER;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
@@ -76,7 +69,23 @@ fn render_cards(overview: &Overview, area: Rect, buffer: &mut Buffer) {
     for card in &plan.cards {
         render_card(overview, card.index, card.area, plan.mode, buffer);
     }
+    render_pin_separator(&plan, area, buffer);
     render_scroll_indicators(&plan, overview.item_count(), area, buffer);
+}
+
+fn render_pin_separator(plan: &LayoutPlan, area: Rect, buffer: &mut Buffer) {
+    let Some(y) = plan.separator_y else {
+        return;
+    };
+    if y < area.y || y >= area.y.saturating_add(area.height) || area.width == 0 {
+        return;
+    }
+    let line = "─".repeat(usize::from(area.width));
+    Paragraph::new(Line::from(Span::styled(
+        line,
+        Style::default().fg(theme().pin_border),
+    )))
+    .render(Rect::new(area.x, y, area.width, 1), buffer);
 }
 
 fn render_help(area: Rect, buffer: &mut Buffer) {
@@ -86,7 +95,7 @@ fn render_help(area: Rect, buffer: &mut Buffer) {
     let block = Block::default()
         .title(" help ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(FOCUS_BORDER));
+        .border_style(Style::default().fg(theme().focus));
     let inner = block.inner(area);
     block.render(area, buffer);
     let lines = vec![
@@ -98,6 +107,7 @@ fn render_help(area: Rect, buffer: &mut Buffer) {
         Line::from("s, then query/tip   Flash search / jump"),
         Line::from("Backspace / Esc     delete / cancel search"),
         Line::from("e / Enter           open session tabs, or jump"),
+        Line::from("p                   pin or unpin a tab"),
         Line::from("-                   previous tab or session last tab"),
         Line::from("q / Esc / ?         back or close / close help"),
         Line::from("Ctrl+y              toggle overview (global)"),
@@ -123,6 +133,7 @@ fn render_card(
     if mode == LayoutMode::Scroll
         && overview.viewing_session().is_none()
         && !overview.item_is_session(index)
+        && !overview.item_is_pinned(index)
     {
         spans.push(Span::raw("  "));
     }
@@ -130,24 +141,32 @@ fn render_card(
         spans.push(Span::styled(
             "› ",
             Style::default()
-                .fg(FOCUS_BORDER)
+                .fg(theme().focus)
                 .add_modifier(Modifier::BOLD),
         ));
     }
     if overview.item_is_session(index) {
         spans.push(Span::styled(
             SESSION_MARK,
-            Style::default().fg(SESSION_BORDER),
+            Style::default().fg(theme().session),
+        ));
+    }
+    if overview.item_is_pinned(index) {
+        spans.push(Span::styled(
+            "* ",
+            Style::default()
+                .fg(theme().pin_mark)
+                .add_modifier(Modifier::BOLD),
         ));
     }
     if overview.item_is_active(index) {
-        spans.push(Span::styled("● ", Style::default().fg(FOCUS_BORDER)));
+        spans.push(Span::styled("● ", Style::default().fg(theme().focus)));
     }
     if overview.is_previous_item(index) {
         spans.push(Span::styled(
             "[-] ",
             Style::default()
-                .fg(TIP_BACKGROUND)
+                .fg(theme().tip_bg)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -161,6 +180,12 @@ fn render_card(
     } else {
         spans.push(Span::raw(title));
     }
+    if let Some(session) = overview.item_pin_session(index) {
+        spans.push(Span::styled(
+            format!("  {session}"),
+            Style::default().fg(theme().pin_border),
+        ));
+    }
     if let Some(count) = overview.item_tab_count(index) {
         spans.push(Span::styled(
             format!("  {count}"),
@@ -170,13 +195,15 @@ fn render_card(
     let text_area = match mode {
         LayoutMode::Framed => {
             let border_color = if candidate {
-                MATCH_BORDER
+                theme().match_border
             } else if overview.cursor() == index {
-                FOCUS_BORDER
+                theme().focus
+            } else if overview.item_is_pinned(index) {
+                theme().pin_border
             } else if overview.item_is_session(index) {
-                SESSION_BORDER
+                theme().session
             } else {
-                CARD_BORDER
+                theme().card_border
             };
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -258,7 +285,7 @@ fn render_scroll_indicators(plan: &LayoutPlan, tab_count: usize, area: Rect, buf
     if plan.mode != LayoutMode::Scroll || area.width == 0 || area.height == 0 {
         return;
     }
-    let style = Style::default().fg(TIP_BACKGROUND);
+    let style = Style::default().fg(theme().tip_bg);
     let x = area.right().saturating_sub(1);
     if plan.first_visible > 0 {
         buffer.set_string(x, area.y, "↑", style);
@@ -289,7 +316,7 @@ fn highlighted_title<'a>(
     spans.push(Span::styled(
         matched,
         Style::default()
-            .fg(MATCH_COLOR)
+            .fg(theme().match_fg)
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(after, normal));
@@ -303,13 +330,15 @@ fn hint_badge<'a>(label: &'a str, prefix_len: usize) -> Vec<Span<'a>> {
     if !typed.is_empty() {
         spans.push(Span::styled(
             typed,
-            Style::default().fg(TIP_TYPED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme().tip_typed)
+                .add_modifier(Modifier::BOLD),
         ));
     }
     if !remaining.is_empty() {
         spans.push(Span::styled(
             remaining,
-            Style::default().fg(TIP_FOREGROUND).bg(TIP_BACKGROUND),
+            Style::default().fg(theme().tip_fg).bg(theme().tip_bg),
         ));
     }
     spans
@@ -322,7 +351,7 @@ fn render_footer(overview: &Overview, area: Rect, buffer: &mut Buffer) {
         Line::from(vec![
             Span::styled(
                 " FLASH ",
-                Style::default().fg(TIP_FOREGROUND).bg(TIP_BACKGROUND),
+                Style::default().fg(theme().tip_fg).bg(theme().tip_bg),
             ),
             Span::raw(" type to search"),
             Span::styled(
@@ -333,7 +362,9 @@ fn render_footer(overview: &Overview, area: Rect, buffer: &mut Buffer) {
             ),
             Span::styled(
                 format!("  tip:{}", overview.hint_jump_prefix()),
-                Style::default().fg(TIP_TYPED).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme().tip_typed)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
         ])
@@ -342,21 +373,21 @@ fn render_footer(overview: &Overview, area: Rect, buffer: &mut Buffer) {
         if let Some(name) = overview.viewing_session() {
             spans.push(Span::styled(
                 format!(" {name} "),
-                Style::default().fg(TIP_FOREGROUND).bg(SESSION_BORDER),
+                Style::default().fg(theme().tip_fg).bg(theme().session),
             ));
             spans.push(Span::raw(
-                "  tabs   s search   e go   - prev   Esc/q back   ? help",
+                "  tabs   s search   e go   p pin   - prev   Esc/q back   ? help",
             ));
         } else {
             if let Some(name) = overview.current_session_name() {
                 spans.push(Span::styled(
                     format!(" {name} "),
-                    Style::default().fg(TIP_FOREGROUND).bg(SESSION_BORDER),
+                    Style::default().fg(theme().tip_fg).bg(theme().session),
                 ));
                 spans.push(Span::raw("  "));
             }
             spans.push(Span::raw(
-                "hjkl move   s search   e go   - prev   q close   ? help",
+                "hjkl move   s search   e go   p pin   - prev   q close   ? help",
             ));
         }
         Line::from(spans)
@@ -368,6 +399,20 @@ fn render_footer(overview: &Overview, area: Rect, buffer: &mut Buffer) {
 mod tests {
     use super::*;
     use crate::{Key, Overview, TabFact};
+
+    fn fg_sgr(color: Color) -> String {
+        let Color::Rgb(red, green, blue) = color else {
+            panic!("theme colors are rgb");
+        };
+        format!("\u{1b}[38;2;{red};{green};{blue}m")
+    }
+
+    fn bg_sgr(color: Color) -> String {
+        let Color::Rgb(red, green, blue) = color else {
+            panic!("theme colors are rgb");
+        };
+        format!("\u{1b}[48;2;{red};{green};{blue}m")
+    }
 
     fn overview() -> Overview {
         let mut overview = Overview::new();
@@ -394,7 +439,7 @@ mod tests {
         let joined = frame.lines.join("\n");
         assert!(joined.contains("ww"));
         assert!(joined.contains("feat/geo-db"));
-        assert!(joined.contains("\u{1b}[38;2;189;147;249m"));
+        assert!(joined.contains(&fg_sgr(theme().focus)));
         assert!(joined.contains("s"));
     }
 
@@ -406,9 +451,9 @@ mod tests {
         let frame = paint(&overview, 12, 40);
         let joined = frame.lines.join("\n");
         assert!(joined.contains("FLASH"));
-        assert!(joined.contains("\u{1b}[48;2;139;233;253m"));
-        assert!(joined.contains("\u{1b}[38;2;16;19;26m"));
-        assert!(joined.contains("\u{1b}[38;2;255;184;108m"));
+        assert!(joined.contains(&bg_sgr(theme().tip_bg)));
+        assert!(joined.contains(&fg_sgr(theme().tip_fg)));
+        assert!(joined.contains(&fg_sgr(theme().match_fg)));
         assert!(!joined.contains("\u{1b}[2m"));
         assert!(joined.contains('a'));
 
@@ -417,7 +462,7 @@ mod tests {
         render_cards(&overview, area, &mut buffer);
         let plan = overview.layout_plan(area);
         let second = plan.cards[1].area;
-        assert_eq!(buffer[(second.x, second.y)].fg, MATCH_BORDER);
+        assert_eq!(buffer[(second.x, second.y)].fg, theme().match_border);
         assert_eq!(buffer[(second.x, second.y)].bg, Color::Reset);
         assert_eq!(buffer[(second.x + 1, second.y + 1)].bg, Color::Reset);
     }
@@ -605,6 +650,98 @@ mod tests {
         assert!(joined.contains("ww"));
         assert!(joined.contains("tab-0"));
         assert!(joined.contains('↓'));
+    }
+
+    #[test]
+    fn pinned_tab_shows_session_rose_frame_and_divider() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![
+            crate::SessionFact {
+                name: "lp".into(),
+                current: false,
+                tab_count: 3,
+                tabs: (0..3)
+                    .map(|position| TabFact {
+                        id: 100 + position,
+                        position,
+                        name: format!("lp-{position}"),
+                        active: false,
+                    })
+                    .collect(),
+            },
+            crate::SessionFact {
+                name: "ww".into(),
+                current: true,
+                tab_count: 1,
+                tabs: vec![],
+            },
+        ]);
+        overview.apply_tabs(vec![TabFact {
+            id: 1,
+            position: 0,
+            name: "notes".into(),
+            active: true,
+        }]);
+        overview.apply_pins(vec![crate::Pin {
+            session: "lp".into(),
+            tab_name: "lp-1".into(),
+        }]);
+
+        let joined = paint(&overview, 14, 70).lines.join("\n");
+        assert!(joined.contains("lp-1"));
+        assert!(joined.contains("lp"));
+        assert!(joined.contains('─'));
+        assert!(joined.contains(&fg_sgr(theme().pin_mark)));
+        assert!(joined.contains(&fg_sgr(theme().pin_border)));
+
+        let area = Rect::new(0, 0, 70, 13);
+        let mut buffer = Buffer::empty(area);
+        render_cards(&overview, area, &mut buffer);
+        let plan = overview.layout_plan(area);
+        let pin = plan.cards[0].area;
+        let rest = plan
+            .cards
+            .iter()
+            .find(|card| !overview.item_is_pinned(card.index))
+            .unwrap()
+            .area;
+        assert_eq!(buffer[(pin.x, pin.y)].fg, theme().pin_border);
+        assert!(pin.y + pin.height < rest.y);
+        assert_eq!(plan.separator_y, Some(pin.y + pin.height));
+    }
+
+    #[test]
+    fn pinned_previous_tab_shows_dash_without_session_name() {
+        let mut overview = Overview::new();
+        overview.apply_sessions(vec![crate::SessionFact {
+            name: "ww".into(),
+            current: true,
+            tab_count: 2,
+            tabs: vec![],
+        }]);
+        overview.apply_tabs(vec![
+            TabFact {
+                id: 1,
+                position: 0,
+                name: "notes".into(),
+                active: true,
+            },
+            TabFact {
+                id: 2,
+                position: 1,
+                name: "logs".into(),
+                active: false,
+            },
+        ]);
+        overview.apply_pins(vec![crate::Pin {
+            session: "ww".into(),
+            tab_name: "logs".into(),
+        }]);
+        overview.set_previous_tab_id(Some(2));
+        let joined = paint(&overview, 12, 50).lines.join("\n");
+        assert!(joined.contains("[-]"));
+        assert!(joined.contains("logs"));
+        assert_eq!(overview.item_pin_session(0), None);
     }
 
     #[test]

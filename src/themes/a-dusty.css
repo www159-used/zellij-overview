@@ -1,0 +1,26 @@
+/* A 尘板：薰衣草 + 青 + 玫瑰，饱和度拉齐，底栏并进青色。
+   用法：覆盖 src/theme.css 后重新编译。只认 :root 里的 --name。 */
+
+:root {
+  /* 焦点：光标框、当前 ●、Flash 已输入 */
+  --focus: #b4a4d4;
+
+  /* session：◆、框、底栏 session 名 */
+  --session: #5eb8ac;
+
+  /* 钉：*、框、分隔线、钉上的 session 名 */
+  --pin-mark: #d48996;
+  --pin-border: #c47a88;
+
+  /* Flash：匹配字、候选框 */
+  --match: #d0a878;
+  --match-border: #b89464;
+
+  /* 普通 tab 框 */
+  --card-border: #565c6c;
+
+  /* 底栏 / Flash 条 / [-] */
+  --tip-fg: #161a22;
+  --tip-bg: #8eb8b0;
+  --tip-typed: var(--focus);
+}

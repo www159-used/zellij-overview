@@ -1,0 +1,26 @@
+/* D 暖暮：陶土钉 + 海玻璃 session + 蜜糖匹配，底栏是沙色。
+   用法：覆盖 src/theme.css 后重新编译。只认 :root 里的 --name。 */
+
+:root {
+  /* 焦点：光标框、当前 ●、Flash 已输入 */
+  --focus: #c4a8cc;
+
+  /* session：◆、框、底栏 session 名 */
+  --session: #6aada0;
+
+  /* 钉：*、框、分隔线、钉上的 session 名 */
+  --pin-mark: #d89078;
+  --pin-border: #c88068;
+
+  /* Flash：匹配字、候选框 */
+  --match: #d4a868;
+  --match-border: #b89058;
+
+  /* 普通 tab 框 */
+  --card-border: #5a564e;
+
+  /* 底栏 / Flash 条 / [-] */
+  --tip-fg: #1a1612;
+  --tip-bg: #c4b49a;
+  --tip-typed: var(--focus);
+}

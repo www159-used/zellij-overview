@@ -1,0 +1,26 @@
+/* E 墨青：焦点/底栏同紫灰，session 青，钉和匹配同暖铜。
+   用法：覆盖 src/theme.css 后重新编译。只认 :root 里的 --name。 */
+
+:root {
+  /* 焦点：光标框、当前 ●、Flash 已输入 */
+  --focus: #a89cc8;
+
+  /* session：◆、框、底栏 session 名 */
+  --session: #5eaea2;
+
+  /* 钉：*、框、分隔线、钉上的 session 名 */
+  --pin-mark: #d08a7a;
+  --pin-border: #c07a6c;
+
+  /* Flash：匹配字、候选框 */
+  --match: #d0a078;
+  --match-border: #b88860;
+
+  /* 普通 tab 框 */
+  --card-border: #4e5462;
+
+  /* 底栏 / Flash 条 / [-] */
+  --tip-fg: #14161c;
+  --tip-bg: #9aa0bc;
+  --tip-typed: var(--focus);
+}
