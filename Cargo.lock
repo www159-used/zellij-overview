@@ -1450,14 +1450,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2355d85b9a3786f481747ced0e0ff2ba35213a1f9bd406ed906554d7af805a1"
 
 [[package]]
-name = "overview"
-version = "0.3.0"
-dependencies = [
- "ratatui",
- "zellij-tile",
-]
-
-[[package]]
 name = "owo-colors"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2787,6 +2779,14 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "synstructure",
+]
+
+[[package]]
+name = "zellij-overview"
+version = "0.3.0"
+dependencies = [
+ "ratatui",
+ "zellij-tile",
 ]
 
 [[package]]

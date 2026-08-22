@@ -1,5 +1,5 @@
 [package]
-name = "overview"
+name = "zellij-overview"
 version = "0.3.0"
 edition = "2021"
 description = "Flash-style tab switcher for Zellij"
@@ -10,11 +10,10 @@ ratatui = { version = "0.30.2", default-features = false }
 zellij-tile = "0.44"
 
 [lib]
-name = "overview"
 path = "src/lib.rs"
 
 [[bin]]
-name = "overview"
+name = "zellij-overview"
 path = "src/main.rs"
 test = false
 doctest = false

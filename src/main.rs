@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use overview::{
+use zellij_overview::{
     append_usage_log, apply_theme_overlay, Action, Key, Overview, Pin, SessionFact, TabFact, Usage,
     UsageEnd, PACKED_THEME_CSS, USAGE_CAP,
 };

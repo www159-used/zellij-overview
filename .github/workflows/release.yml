@@ -31,8 +31,8 @@ jobs:
 
       - name: Package checksums
         run: |
-          cp target/wasm32-wasip1/release/overview.wasm "overview-${GITHUB_REF_NAME}.wasm"
-          sha256sum "overview-${GITHUB_REF_NAME}.wasm" > "overview-${GITHUB_REF_NAME}.wasm.sha256"
+          cp target/wasm32-wasip1/release/zellij-overview.wasm "zellij-overview-${GITHUB_REF_NAME}.wasm"
+          sha256sum "zellij-overview-${GITHUB_REF_NAME}.wasm" > "zellij-overview-${GITHUB_REF_NAME}.wasm.sha256"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -40,5 +40,5 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            overview-${{ github.ref_name }}.wasm
-            overview-${{ github.ref_name }}.wasm.sha256
+            zellij-overview-${{ github.ref_name }}.wasm
+            zellij-overview-${{ github.ref_name }}.wasm.sha256
