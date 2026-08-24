@@ -58,7 +58,7 @@ shared {
 
 <img src="../../asset/flash.gif" alt="按 s 搜 log，再按字母跳到 logs" width="720">
 
-`s` 开搜，打标题里的几个字，匹配的卡片会带一个字母。按那个字母就跳，不用 Enter。比如打 `log`，再按提示的键到 `logs`。`Esc` 退回普通模式。字母落在 session 上，效果和 `e` 一样，先看它的 tab。
+`s` 开搜，打标题里的几个字。只剩一个匹配就立刻跳。多个匹配时卡片上会有字母，再按那个字母跳，不用 Enter。比如打 `log`，再按提示的键到 `logs`。`Esc` 退回普通模式。字母落在 session 上，效果和 `e` 一样，先看它的 tab。
 
 ### 换 session
 
@@ -87,11 +87,13 @@ Zellij 的浮动层是整层显隐的。打开 overview 时，藏着的其它浮
 ```bash
 cargo fmt --check
 cargo lint
-# 本机测核心逻辑，不要加 wasm target
-cargo test --lib
+# 测核心行为，不要加 wasm target
+cargo test --lib   # cargo t
 cargo wasm
 zellij -l zellij.kdl
 ```
+
+测试走 `Overview::decide`（`Key` 进，`Action` 出）。跳转、Flash、一块板、钉、`-` 在 `src/tests/`。布局、渲染、配色、用量、浮窗尺寸跟各自模块。`src/main.rs` 只是把 Zellij 事件接到这层接口，不做单测。
 
 开发布局加载的是 `target/wasm32-wasip1/release/zellij-overview.wasm`。颜色在 `src/theme.css`，编进插件。改色不用重编：拷到插件的 `/cache/theme.css`，重开 overview。关掉时会在 `/cache/usage.jsonl` 记一条本机用量，`./scripts/usage-summary.sh` 可以汇总。
 

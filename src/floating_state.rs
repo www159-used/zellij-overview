@@ -1,11 +1,11 @@
 #[derive(Debug, Default)]
-pub(crate) struct FloatingLayerState {
+pub struct FloatingLayerState {
     captured: bool,
     previous_pane_was_floating: bool,
 }
 
 impl FloatingLayerState {
-    pub(crate) fn capture(&mut self, previous_pane_was_floating: Option<bool>) {
+    pub fn capture(&mut self, previous_pane_was_floating: Option<bool>) {
         if self.captured {
             return;
         }
@@ -13,7 +13,7 @@ impl FloatingLayerState {
         self.previous_pane_was_floating = previous_pane_was_floating.unwrap_or(false);
     }
 
-    pub(crate) fn should_hide_on_close(&self) -> bool {
+    pub fn should_hide_on_close(&self) -> bool {
         !self.previous_pane_was_floating
     }
 }

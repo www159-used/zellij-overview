@@ -3,14 +3,11 @@ use std::fs;
 use std::path::Path;
 
 use zellij_overview::{
-    append_usage_log, apply_theme_overlay, Action, Key, Overview, Pin, SessionFact, TabFact, Usage,
-    UsageEnd, PACKED_THEME_CSS, USAGE_CAP,
+    append_usage_log, apply_theme_overlay, float_size_from_config, Action, FloatSize,
+    FloatingLayerState, Key, Overview, Pin, SessionFact, TabFact, Usage, UsageEnd,
+    PACKED_THEME_CSS, USAGE_CAP,
 };
 use zellij_tile::prelude::*;
-
-mod floating_state;
-
-use floating_state::FloatingLayerState;
 
 const PLUGIN_NAME: &str = "overview";
 const PREVIOUS_JUMP_PATH: &str = "/cache/previous";
@@ -31,17 +28,24 @@ struct State {
     fetched_sessions: bool,
     /// Snap cursor to the active tab on the first TabUpdate after open.
     pending_initial_cursor: bool,
+    /// Floating enlarge requested; next render is skipped so the first paint is framed.
+    enlarge_pending: bool,
+    enlarged_once: bool,
+    /// Still growing after enlarge; skip compact so the first paint is framed.
+    opening: bool,
+    float_size: FloatSize,
     usage: Usage,
 }
 
 register_plugin!(State);
 
 impl ZellijPlugin for State {
-    fn load(&mut self, _configuration: BTreeMap<String, String>) {
+    fn load(&mut self, configuration: BTreeMap<String, String>) {
         let ids = get_plugin_ids();
         self.own_plugin_id = Some(ids.plugin_id);
         self.client_id = Some(ids.client_id);
         self.pending_initial_cursor = true;
+        self.float_size = float_size_from_config(&configuration);
         load_theme_overlay();
         subscribe(&[
             EventType::TabUpdate,
@@ -65,6 +69,7 @@ impl ZellijPlugin for State {
                         rename_plugin_pane(id, PLUGIN_NAME);
                     }
                     self.close_if_duplicate();
+                    self.enlarge_if_floating();
                     self.refresh_sessions();
                     self.restore_previous_jump();
                 }
@@ -73,6 +78,7 @@ impl ZellijPlugin for State {
             Event::PaneUpdate(manifest) => {
                 self.pane_manifest = Some(manifest);
                 self.close_if_duplicate();
+                self.enlarge_if_floating();
                 false
             }
             Event::TabUpdate(tabs) => {
@@ -118,7 +124,21 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        if self.enlarge_pending {
+            // Drop the still-small frame after resize is requested.
+            self.enlarge_pending = false;
+            self.enlarged_once = true;
+            self.opening = true;
+            return;
+        }
+        if !self.can_paint() {
+            return;
+        }
         self.overview.set_viewport(rows, cols);
+        if self.overview.should_hold_opening_paint(self.opening) {
+            return;
+        }
+        self.opening = false;
         let frame = self.overview.paint(rows, cols);
         // The plugin pane is exactly `rows` high. A newline after the last
         // line scrolls the first card into scrollback (Tab #1 vanishes).
@@ -127,6 +147,24 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    fn can_paint(&self) -> bool {
+        if !self.permissions_granted {
+            return false;
+        }
+        let Some(own_id) = self.own_plugin_id else {
+            return false;
+        };
+        let Some(manifest) = self.pane_manifest.as_ref() else {
+            return false;
+        };
+        let floating = manifest
+            .panes
+            .values()
+            .flatten()
+            .any(|pane| pane.is_plugin && pane.id == own_id && pane.is_floating);
+        !floating || self.enlarged_once
+    }
+
     fn close_if_duplicate(&self) {
         if !self.permissions_granted || !self.own_pane_is_listed() {
             return;
@@ -189,6 +227,38 @@ impl State {
             .flatten()
             .find(|pane| pane_id(pane) == previous_pane)
             .map(|pane| pane.is_floating)
+    }
+
+    fn enlarge_if_floating(&mut self) {
+        if self.enlarged_once || self.enlarge_pending || !self.permissions_granted {
+            return;
+        }
+        let Some(own_id) = self.own_plugin_id else {
+            return;
+        };
+        let Some(manifest) = self.pane_manifest.as_ref() else {
+            return;
+        };
+        let floating = manifest
+            .panes
+            .values()
+            .flatten()
+            .any(|pane| pane.is_plugin && pane.id == own_id && pane.is_floating);
+        if !floating {
+            return;
+        }
+        let Some(coords) = FloatingPaneCoordinates::new(
+            Some(self.float_size.x.clone()),
+            Some(self.float_size.y.clone()),
+            Some(self.float_size.width.clone()),
+            Some(self.float_size.height.clone()),
+            None,
+            None,
+        ) else {
+            return;
+        };
+        self.enlarge_pending = true;
+        change_floating_panes_coordinates(vec![(PaneId::Plugin(own_id), coords)]);
     }
 
     fn own_pane_is_listed(&self) -> bool {

@@ -1,7 +1,8 @@
 use ratatui::layout::Rect;
 
 const FRAMED_CARD_HEIGHT: usize = 3;
-const FRAMED_MIN_WIDTH: usize = 6;
+const FRAMED_MIN_WIDTH: usize = 8;
+const FRAMED_FRAME_WIDTH: usize = 4;
 const COMPACT_CARD_HEIGHT: usize = 1;
 const COMPACT_MIN_WIDTH: usize = 4;
 const MAX_ROW_STRETCH: usize = 4;
@@ -29,31 +30,47 @@ pub struct LayoutPlan {
     pub first_visible: usize,
     pub visible_count: usize,
     pub cards: Vec<CardPlacement>,
-    pub separator_y: Option<u16>,
+    pub separators: Vec<u16>,
 }
 
 impl LayoutPlan {
+    #[cfg(test)]
     pub fn calculate(item_widths: &[usize], area: Rect, scroll_offset: usize) -> Self {
-        Self::calculate_with_pins(item_widths, area, scroll_offset, 0)
+        Self::calculate_with_bands(item_widths, area, scroll_offset, &[])
     }
 
+    #[cfg(test)]
     pub fn calculate_with_pins(
         item_widths: &[usize],
         area: Rect,
         scroll_offset: usize,
         pin_count: usize,
     ) -> Self {
+        let splits: Vec<usize> = (pin_count > 0 && pin_count < item_widths.len())
+            .then_some(pin_count)
+            .into_iter()
+            .collect();
+        Self::calculate_with_bands(item_widths, area, scroll_offset, &splits)
+    }
+
+    pub fn calculate_with_bands(
+        item_widths: &[usize],
+        area: Rect,
+        scroll_offset: usize,
+        band_ends: &[usize],
+    ) -> Self {
         if item_widths.is_empty() || area.width == 0 || area.height == 0 {
             return Self::empty();
         }
+        let splits = normalize_splits(band_ends, item_widths.len());
         if let Some(plan) = flow_plan(
             LayoutMode::Framed,
             item_widths,
             area,
             FRAMED_CARD_HEIGHT,
             FRAMED_MIN_WIDTH,
-            2,
-            pin_count,
+            FRAMED_FRAME_WIDTH,
+            &splits,
         ) {
             return plan;
         }
@@ -64,11 +81,11 @@ impl LayoutPlan {
             COMPACT_CARD_HEIGHT,
             COMPACT_MIN_WIDTH,
             0,
-            pin_count,
+            &splits,
         ) {
             return plan;
         }
-        scroll_plan(item_widths.len(), area, scroll_offset, pin_count)
+        scroll_plan(item_widths.len(), area, scroll_offset, &splits)
     }
 
     pub fn visible_end(&self) -> usize {
@@ -115,9 +132,20 @@ impl LayoutPlan {
             first_visible: 0,
             visible_count: 0,
             cards: Vec::new(),
-            separator_y: None,
+            separators: Vec::new(),
         }
     }
+}
+
+fn normalize_splits(band_ends: &[usize], item_count: usize) -> Vec<usize> {
+    let mut splits: Vec<usize> = band_ends
+        .iter()
+        .copied()
+        .filter(|&end| end > 0 && end < item_count)
+        .collect();
+    splits.sort_unstable();
+    splits.dedup();
+    splits
 }
 
 fn flow_plan(
@@ -127,7 +155,7 @@ fn flow_plan(
     card_height: usize,
     minimum_width: usize,
     frame_width: usize,
-    pin_count: usize,
+    splits: &[usize],
 ) -> Option<LayoutPlan> {
     let available_width = usize::from(area.width);
     if available_width < minimum_width {
@@ -143,90 +171,91 @@ fn flow_plan(
         .iter()
         .map(|width| width.saturating_add(frame_width).max(minimum_width))
         .collect();
-    let split = (pin_count > 0 && pin_count < widths.len()).then_some(pin_count);
-    let pin_rows = split
-        .map(|count| wrap_rows(&widths[..count], available_width))
-        .unwrap_or_default();
-    let rest_rows = wrap_rows(
-        split.map_or(widths.as_slice(), |count| &widths[count..]),
-        available_width,
-    );
-    let separator = usize::from(split.is_some());
-    let pin_height = pin_rows.len() * card_height;
-    let rest_height = rest_rows.len() * card_height;
-    let grid_height = pin_height + separator + rest_height;
+
+    let mut boundaries = Vec::with_capacity(splits.len() + 2);
+    boundaries.push(0);
+    boundaries.extend(splits.iter().copied());
+    boundaries.push(widths.len());
+
+    let mut bands = Vec::with_capacity(boundaries.len() - 1);
+    for window in boundaries.windows(2) {
+        bands.push(wrap_rows(&widths[window[0]..window[1]], available_width));
+    }
+
+    let separator_count = bands.len().saturating_sub(1);
+    let band_heights: Vec<usize> = bands.iter().map(|rows| rows.len() * card_height).collect();
+    let grid_height = band_heights.iter().sum::<usize>() + separator_count;
     if grid_height > usize::from(area.height) {
         return None;
     }
 
-    let origin_y = usize::from(area.y) + (usize::from(area.height) - grid_height) / 2;
-    let rest_origin_y = origin_y + pin_height + separator;
-    let rest_row_base = pin_rows.len();
+    let mut origin_y = usize::from(area.y) + (usize::from(area.height) - grid_height) / 2;
+    let mut row_base = 0;
+    let mut index_base = 0;
     let mut cards = Vec::with_capacity(item_widths.len());
-    place_rows(
-        &pin_rows,
-        origin_y,
-        0,
-        0,
-        card_height,
-        available_width,
-        usize::from(area.x),
-        &mut cards,
-    );
-    place_rows(
-        &rest_rows,
-        rest_origin_y,
-        rest_row_base,
-        split.unwrap_or(0),
-        card_height,
-        available_width,
-        usize::from(area.x),
-        &mut cards,
-    );
-    let columns = pin_rows
-        .iter()
-        .chain(&rest_rows)
-        .map(Vec::len)
-        .max()
-        .unwrap_or(1);
+    let mut separators = Vec::with_capacity(separator_count);
+    for (band_index, rows) in bands.iter().enumerate() {
+        place_rows(
+            rows,
+            PlaceRows {
+                origin_y,
+                row_base,
+                index_base,
+                card_height,
+                available_width,
+                origin_x: usize::from(area.x),
+            },
+            &mut cards,
+        );
+        let band_height = band_heights[band_index];
+        origin_y += band_height;
+        row_base += rows.len();
+        index_base = boundaries[band_index + 1];
+        if band_index + 1 < bands.len() {
+            separators.push(origin_y as u16);
+            origin_y += 1;
+        }
+    }
+
+    let columns = bands.iter().flatten().map(Vec::len).max().unwrap_or(1);
 
     Some(LayoutPlan {
         mode,
         columns,
-        total_rows: pin_rows.len() + rest_rows.len(),
+        total_rows: bands.iter().map(Vec::len).sum(),
         tab_count: item_widths.len(),
         first_visible: 0,
         visible_count: item_widths.len(),
         cards,
-        separator_y: split.map(|_| (origin_y + pin_height) as u16),
+        separators,
     })
 }
 
-fn place_rows(
-    rows: &[Vec<(usize, usize)>],
+struct PlaceRows {
     origin_y: usize,
     row_base: usize,
     index_base: usize,
     card_height: usize,
     available_width: usize,
     origin_x: usize,
-    cards: &mut Vec<CardPlacement>,
-) {
+}
+
+fn place_rows(rows: &[Vec<(usize, usize)>], place: PlaceRows, cards: &mut Vec<CardPlacement>) {
     for (row_index, row) in rows.iter().enumerate() {
         let row_width: usize = row.iter().map(|(_, width)| *width).sum();
-        let stretch = ((available_width - row_width) / row.len()).min(MAX_ROW_STRETCH);
+        let stretch = ((place.available_width - row_width) / row.len()).min(MAX_ROW_STRETCH);
         let stretched_width = row_width + stretch * row.len();
-        let mut x = origin_x + (available_width - stretched_width) / 2;
+        let mut x = place.origin_x + (place.available_width - stretched_width) / 2;
         for (index, width) in row {
             let width = width + stretch;
             cards.push(CardPlacement {
-                index: index_base + *index,
-                row: row_base + row_index,
+                index: place.index_base + *index,
+                row: place.row_base + row_index,
                 area: Rect::new(
                     x as u16,
-                    (origin_y + row_index * card_height) as u16,
+                    (place.origin_y + row_index * place.card_height) as u16,
                     width as u16,
-                    card_height as u16,
+                    place.card_height as u16,
                 ),
             });
             x += width;
@@ -235,6 +264,9 @@ fn place_rows(
 }
 
 fn wrap_rows(widths: &[usize], available_width: usize) -> Vec<Vec<(usize, usize)>> {
+    if widths.is_empty() {
+        return Vec::new();
+    }
     let mut rows: Vec<Vec<(usize, usize)>> = vec![Vec::new()];
     let mut used_width = 0;
     for (index, width) in widths.iter().copied().enumerate() {
@@ -250,16 +282,15 @@ fn wrap_rows(widths: &[usize], available_width: usize) -> Vec<Vec<(usize, usize)
     rows
 }
 
-fn scroll_plan(tab_count: usize, area: Rect, scroll_offset: usize, pin_count: usize) -> LayoutPlan {
+fn scroll_plan(tab_count: usize, area: Rect, scroll_offset: usize, splits: &[usize]) -> LayoutPlan {
     let first_visible = scroll_offset.min(tab_count.saturating_sub(1));
-    let show_separator = pin_count > 0 && pin_count < tab_count;
     let has_hidden_items =
         first_visible > 0 || first_visible.saturating_add(usize::from(area.height)) < tab_count;
     let content_width = area
         .width
         .saturating_sub(u16::from(area.width > 1 && has_hidden_items));
     let mut cards = Vec::new();
-    let mut separator_y = None;
+    let mut separators = Vec::new();
     let mut y = area.y;
     let end_y = area.y.saturating_add(area.height);
     let mut index = first_visible;
@@ -270,8 +301,8 @@ fn scroll_plan(tab_count: usize, area: Rect, scroll_offset: usize, pin_count: us
             area: Rect::new(area.x, y, content_width, 1),
         });
         y = y.saturating_add(1);
-        if show_separator && index + 1 == pin_count && y < end_y {
-            separator_y = Some(y);
+        if splits.iter().any(|&split| split == index + 1) && y < end_y {
+            separators.push(y);
             y = y.saturating_add(1);
         }
         index += 1;
@@ -285,7 +316,7 @@ fn scroll_plan(tab_count: usize, area: Rect, scroll_offset: usize, pin_count: us
         first_visible,
         visible_count: cards.len(),
         cards,
-        separator_y,
+        separators,
     }
 }
 
@@ -309,9 +340,23 @@ mod tests {
         let first_rest = plan.cards.iter().find(|card| card.index == 2).unwrap();
         assert!(last_pin.area.y + last_pin.area.height < first_rest.area.y);
         assert_eq!(
-            plan.separator_y,
-            Some(last_pin.area.y + last_pin.area.height)
+            plan.separators,
+            vec![last_pin.area.y + last_pin.area.height]
         );
+    }
+
+    #[test]
+    fn sessions_and_tabs_get_a_second_separator_band() {
+        let plan = LayoutPlan::calculate_with_bands(&[8, 8, 8, 8], rect(50, 14), 0, &[1, 3]);
+        assert_eq!(plan.mode, LayoutMode::Framed);
+        assert_eq!(plan.separators.len(), 2);
+        let pin = plan.cards.iter().find(|card| card.index == 0).unwrap();
+        let session = plan.cards.iter().find(|card| card.index == 1).unwrap();
+        let tab = plan.cards.iter().find(|card| card.index == 3).unwrap();
+        assert!(pin.area.y + pin.area.height < session.area.y);
+        assert!(session.area.y + session.area.height < tab.area.y);
+        assert_eq!(plan.separators[0], pin.area.y + pin.area.height);
+        assert_eq!(plan.separators[1], session.area.y + session.area.height);
     }
 
     #[test]
@@ -363,7 +408,7 @@ mod tests {
 
     #[test]
     fn vertical_navigation_uses_nearest_horizontal_center() {
-        let plan = LayoutPlan::calculate(&[6, 18, 6, 12], rect(30, 7), 0);
+        let plan = LayoutPlan::calculate(&[6, 18, 6, 12], rect(36, 7), 0);
         assert_eq!(plan.total_rows, 2);
         assert_eq!(plan.vertical_neighbor(1, 1), 3);
         assert_eq!(plan.vertical_neighbor(2, -1), 0);

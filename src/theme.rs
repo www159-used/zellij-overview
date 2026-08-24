@@ -10,12 +10,14 @@ static CURRENT: Mutex<Option<Theme>> = Mutex::new(None);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub focus: Color,
+    pub focus_fill: Color,
     pub session: Color,
     pub pin_mark: Color,
     pub pin_border: Color,
     pub match_fg: Color,
     pub match_border: Color,
     pub card_border: Color,
+    pub separator: Color,
     pub tip_fg: Color,
     pub tip_bg: Color,
     pub tip_typed: Color,
@@ -23,9 +25,7 @@ pub struct Theme {
 
 pub fn theme() -> Theme {
     let mut current = CURRENT.lock().expect("theme lock");
-    current
-        .get_or_insert_with(|| Theme::from_css(PACKED_THEME_CSS))
-        .clone()
+    *current.get_or_insert_with(|| Theme::from_css(PACKED_THEME_CSS))
 }
 
 pub fn apply_theme_overlay(css: &str) {
@@ -45,12 +45,14 @@ impl Theme {
     fn try_from_vars(vars: &BTreeMap<String, String>) -> Option<Self> {
         Some(Self {
             focus: try_color(vars, "focus")?,
+            focus_fill: try_color(vars, "focus-fill")?,
             session: try_color(vars, "session")?,
             pin_mark: try_color(vars, "pin-mark")?,
             pin_border: try_color(vars, "pin-border")?,
             match_fg: try_color(vars, "match")?,
             match_border: try_color(vars, "match-border")?,
             card_border: try_color(vars, "card-border")?,
+            separator: try_color(vars, "separator")?,
             tip_fg: try_color(vars, "tip-fg")?,
             tip_bg: try_color(vars, "tip-bg")?,
             tip_typed: try_color(vars, "tip-typed")?,
@@ -161,6 +163,8 @@ mod tests {
         assert_eq!(theme.session, Color::Rgb(105, 208, 196));
         assert_eq!(theme.pin_mark, Color::Rgb(249, 169, 182));
         assert_eq!(theme.tip_typed, theme.focus);
+        assert_eq!(theme.separator, theme.card_border);
+        assert_eq!(theme.focus_fill, Color::Rgb(0x3a, 0x2f, 0x52));
     }
 
     #[test]

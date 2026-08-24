@@ -61,7 +61,7 @@ The footer shows the common keys. Press `?` inside overview for the full help.
 
 <img src="asset/flash.gif" alt="Flash search: type log, then the tip to jump" width="720">
 
-Press `s`, type part of a title, then press the tip (such as `a`) to jump. Example: `log` then the tip lands on `logs`. `Esc` leaves search. A tip on a session card opens that session's tab board.
+Press `s`, type part of a title. One match jumps immediately. Several matches show a tip — press it (such as `a`) to jump. Example: `log` then the tip lands on `logs`. `Esc` leaves search. A tip on a session card opens that session's tab board.
 
 ### Another session's tabs
 
@@ -90,11 +90,13 @@ Zellij shows or hides the floating layer as a whole. Opening overview also revea
 ```bash
 cargo fmt --check
 cargo lint
-# Host-side core tests; do not use the WASM target
-cargo test --lib
+# Core behavior; do not use the WASM target
+cargo test --lib   # cargo t
 cargo wasm
 zellij -l zellij.kdl
 ```
+
+Tests sit on `Overview::decide` (`Key` in, `Action` out). Jump, Flash, the board, pins, and `-` live under `src/tests/`. Grid, render, theme, usage, and float size keep tests next to the module. The WASM host in `src/main.rs` is not unit-tested: it only maps Zellij events onto that interface.
 
 The development layout loads `target/wasm32-wasip1/release/zellij-overview.wasm`. Colors live in `src/theme.css`. Defaults are compiled in. To change colors without rebuilding, copy that file to the plugin `/cache/theme.css` and reopen overview. Closing overview appends one local line to `/cache/usage.jsonl`. Summarize with `./scripts/usage-summary.sh`.
 

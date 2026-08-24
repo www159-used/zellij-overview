@@ -3,13 +3,14 @@
    不改代码：把本文件复制为插件 /cache/theme.css，只改要覆盖的变量，重开 overview。 */
 
 :root {
-  /* 焦点：光标框、当前 ●、Flash 已输入 */
-  --focus: #cebcec;
+  /* 焦点：光标框、填充、当前 ●、Flash 已输入 */
+  --focus: #e4d4ff;
+  --focus-fill: #3a2f52;
 
   /* session：◆、青框、底栏 session 名 */
   --session: #69d0c4;
 
-  /* 钉：*、框、分隔线、钉上的 session 名 */
+  /* 钉：*、框、钉上的 session 名 */
   --pin-mark: #f9a9b6;
   --pin-border: #f192a1;
 
@@ -19,6 +20,9 @@
 
   /* 普通 tab 框 */
   --card-border: #61687c;
+
+  /* 分区横线（pin / session / tab 共用） */
+  --separator: var(--card-border);
 
   /* 底栏 / Flash 条 / [-] */
   --tip-fg: #161a22;

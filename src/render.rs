@@ -69,23 +69,23 @@ fn render_cards(overview: &Overview, area: Rect, buffer: &mut Buffer) {
     for card in &plan.cards {
         render_card(overview, card.index, card.area, plan.mode, buffer);
     }
-    render_pin_separator(&plan, area, buffer);
+    render_separators(&plan, area, buffer);
     render_scroll_indicators(&plan, overview.item_count(), area, buffer);
 }
 
-fn render_pin_separator(plan: &LayoutPlan, area: Rect, buffer: &mut Buffer) {
-    let Some(y) = plan.separator_y else {
-        return;
-    };
-    if y < area.y || y >= area.y.saturating_add(area.height) || area.width == 0 {
+fn render_separators(plan: &LayoutPlan, area: Rect, buffer: &mut Buffer) {
+    if area.width == 0 {
         return;
     }
     let line = "─".repeat(usize::from(area.width));
-    Paragraph::new(Line::from(Span::styled(
-        line,
-        Style::default().fg(theme().pin_border),
-    )))
-    .render(Rect::new(area.x, y, area.width, 1), buffer);
+    let style = Style::default().fg(theme().separator);
+    for &y in &plan.separators {
+        if y < area.y || y >= area.y.saturating_add(area.height) {
+            continue;
+        }
+        Paragraph::new(Line::from(Span::styled(line.clone(), style)))
+            .render(Rect::new(area.x, y, area.width, 1), buffer);
+    }
 }
 
 fn render_help(area: Rect, buffer: &mut Buffer) {
@@ -186,18 +186,12 @@ fn render_card(
             Style::default().fg(theme().pin_border),
         ));
     }
-    if let Some(count) = overview.item_tab_count(index) {
-        spans.push(Span::styled(
-            format!("  {count}"),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
     let text_area = match mode {
         LayoutMode::Framed => {
+            let focused = overview.cursor() == index;
+            let box_area = framed_box_area(area);
             let border_color = if candidate {
                 theme().match_border
-            } else if overview.cursor() == index {
-                theme().focus
             } else if overview.item_is_pinned(index) {
                 theme().pin_border
             } else if overview.item_is_session(index) {
@@ -208,22 +202,33 @@ fn render_card(
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color));
-            let inner = block.inner(area);
-            block.render(area, buffer);
-            buffer.set_style(inner, Style::default().fg(CARD_FOREGROUND).bg(Color::Reset));
+            let inner = block.inner(box_area);
+            block.render(box_area, buffer);
+            buffer.set_style(inner, Style::default().fg(CARD_FOREGROUND));
+            if focused {
+                draw_focus_corners(area, buffer);
+            }
             Rect::new(
-                area.x.saturating_add(1),
-                area.y.saturating_add(area.height / 2),
-                area.width.saturating_sub(2),
+                box_area.x.saturating_add(1),
+                box_area.y.saturating_add(box_area.height / 2),
+                box_area.width.saturating_sub(2),
                 1,
             )
         }
-        LayoutMode::Compact => Rect::new(
-            area.x,
-            area.y.saturating_add(area.height / 2),
-            area.width,
-            1,
-        ),
+        LayoutMode::Compact => {
+            if overview.cursor() == index {
+                buffer.set_style(
+                    area,
+                    Style::default().fg(CARD_FOREGROUND).bg(theme().focus_fill),
+                );
+            }
+            Rect::new(
+                area.x,
+                area.y.saturating_add(area.height / 2),
+                area.width,
+                1,
+            )
+        }
         LayoutMode::Scroll => area,
     };
     let spans = truncate_spans(spans, usize::from(text_area.width));
@@ -234,6 +239,41 @@ fn render_card(
             Alignment::Center
         })
         .render(text_area, buffer);
+}
+
+fn framed_box_area(area: Rect) -> Rect {
+    if area.width < 4 {
+        return area;
+    }
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y,
+        area.width.saturating_sub(2),
+        area.height,
+    )
+}
+
+fn draw_focus_corners(area: Rect, buffer: &mut Buffer) {
+    if area.width < 2 || area.height < 2 {
+        return;
+    }
+    let style = Style::default()
+        .fg(theme().focus)
+        .add_modifier(Modifier::BOLD);
+    let right = area.x.saturating_add(area.width.saturating_sub(1));
+    let bottom = area.y.saturating_add(area.height.saturating_sub(1));
+    put_symbol(buffer, area.x, area.y, "⌜", style);
+    put_symbol(buffer, right, area.y, "⌝", style);
+    put_symbol(buffer, area.x, bottom, "⌞", style);
+    put_symbol(buffer, right, bottom, "⌟", style);
+}
+
+fn put_symbol(buffer: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
+    let Some(cell) = buffer.cell_mut((x, y)) else {
+        return;
+    };
+    cell.set_symbol(symbol);
+    cell.set_style(style);
 }
 
 fn truncate_spans<'a>(spans: Vec<Span<'a>>, max_width: usize) -> Vec<Span<'a>> {
@@ -440,14 +480,56 @@ mod tests {
         assert!(joined.contains("ww"));
         assert!(joined.contains("feat/geo-db"));
         assert!(joined.contains(&fg_sgr(theme().focus)));
+        assert!(!joined.contains(&bg_sgr(theme().focus_fill)));
         assert!(joined.contains("s"));
+        assert!(joined.contains('⌜'));
+        assert!(joined.contains('⌞'));
+    }
+
+    #[test]
+    fn focused_card_paints_corners_outside_the_inner_box() {
+        let overview = overview();
+        let area = Rect::new(0, 0, 40, 11);
+        let mut buffer = Buffer::empty(area);
+        render_cards(&overview, area, &mut buffer);
+        let plan = overview.layout_plan(area);
+        let card = plan.cards[0].area;
+        let inner = framed_box_area(card);
+        assert_eq!(buffer[(card.x, card.y)].symbol(), "⌜");
+        assert_eq!(buffer[(card.x + card.width - 1, card.y)].symbol(), "⌝");
+        assert_eq!(buffer[(inner.x, inner.y)].symbol(), "┌");
+        assert_eq!(
+            buffer[(plan.cards[1].area.x, plan.cards[1].area.y)].symbol(),
+            " "
+        );
     }
 
     #[test]
     fn flash_mode_paints_high_contrast_labels() {
-        let mut overview = overview();
+        let mut overview = Overview::new();
+        overview.apply_tabs(vec![
+            TabFact {
+                id: 1,
+                position: 0,
+                name: "notes".into(),
+                active: true,
+            },
+            TabFact {
+                id: 2,
+                position: 1,
+                name: "feat/geo-db".into(),
+                active: false,
+            },
+            TabFact {
+                id: 3,
+                position: 2,
+                name: "logs".into(),
+                active: false,
+            },
+        ]);
         overview.decide(Key::StartHint);
-        overview.decide(Key::Input('g'));
+        // Ambiguous "o" keeps Flash open; a unique letter would jump.
+        overview.decide(Key::Input('o'));
         let frame = paint(&overview, 12, 40);
         let joined = frame.lines.join("\n");
         assert!(joined.contains("FLASH"));
@@ -461,7 +543,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         render_cards(&overview, area, &mut buffer);
         let plan = overview.layout_plan(area);
-        let second = plan.cards[1].area;
+        let second = framed_box_area(plan.cards[1].area);
         assert_eq!(buffer[(second.x, second.y)].fg, theme().match_border);
         assert_eq!(buffer[(second.x, second.y)].bg, Color::Reset);
         assert_eq!(buffer[(second.x + 1, second.y + 1)].bg, Color::Reset);
@@ -599,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn fused_board_paints_session_marks_and_tab_counts() {
+    fn fused_board_paints_session_marks() {
         let mut overview = overview();
         overview.apply_sessions(vec![
             crate::SessionFact {
@@ -619,11 +701,15 @@ mod tests {
         assert!(joined.contains("◆"));
         assert!(joined.contains("ww"));
         assert!(joined.contains("lp"));
-        assert!(joined.contains('4'));
-        assert!(joined.contains('2'));
+        assert!(!joined.contains("  4"));
+        assert!(!joined.contains("  2"));
         assert!(joined.contains("feat/geo-db"));
         assert!(!joined.contains("SESSIONS"));
         assert!(!joined.contains("SPACE"));
+        assert!(joined.contains('─'));
+        assert!(joined.contains(&fg_sgr(theme().separator)));
+        let plan = overview.layout_plan(Rect::new(0, 0, 60, 11));
+        assert_eq!(plan.separators.len(), 1);
     }
 
     #[test]
@@ -693,6 +779,7 @@ mod tests {
         assert!(joined.contains('─'));
         assert!(joined.contains(&fg_sgr(theme().pin_mark)));
         assert!(joined.contains(&fg_sgr(theme().pin_border)));
+        assert!(joined.contains(&fg_sgr(theme().separator)));
 
         let area = Rect::new(0, 0, 70, 13);
         let mut buffer = Buffer::empty(area);
@@ -705,9 +792,10 @@ mod tests {
             .find(|card| !overview.item_is_pinned(card.index))
             .unwrap()
             .area;
-        assert_eq!(buffer[(pin.x, pin.y)].fg, theme().pin_border);
+        let pin_box = framed_box_area(pin);
+        assert_eq!(buffer[(pin_box.x, pin_box.y)].fg, theme().pin_border);
         assert!(pin.y + pin.height < rest.y);
-        assert_eq!(plan.separator_y, Some(pin.y + pin.height));
+        assert!(plan.separators.contains(&(pin.y + pin.height)));
     }
 
     #[test]

@@ -1,15 +1,22 @@
 //! Tab overview core. No Zellij types — the WASM adapter maps host events in.
 
 mod ansi;
-#[cfg(test)]
+mod float_size;
 mod floating_state;
 mod grid;
 mod render;
 mod theme;
 mod usage;
 
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 
+pub use float_size::{float_size_from_config, FloatSize};
+pub use floating_state::FloatingLayerState;
 use ratatui::{layout::Rect, text::Line};
 pub use render::{paint, Frame};
 pub use theme::{apply_theme_overlay, PACKED_THEME_CSS};
@@ -481,8 +488,10 @@ impl Overview {
         self.slots().len()
     }
 
-    pub(crate) fn item_tab_count(&self, index: usize) -> Option<usize> {
-        self.session_at(index).map(|session| session.tab_count)
+    /// Opening the float grows through a compact size. Hold that frame so the
+    /// first paint the user sees is already framed.
+    pub fn should_hold_opening_paint(&self, opening: bool) -> bool {
+        opening && self.current_layout_plan().mode == grid::LayoutMode::Compact
     }
 
     pub fn decide(&mut self, key: Key) -> Action {
@@ -782,15 +791,34 @@ impl Overview {
     }
 
     pub(crate) fn layout_plan(&self, area: Rect) -> grid::LayoutPlan {
-        grid::LayoutPlan::calculate_with_pins(
+        grid::LayoutPlan::calculate_with_bands(
             &self.item_widths(),
             area,
             self.scroll_offset,
-            self.pin_count(),
+            &self.band_ends(),
         )
     }
 
-    fn current_layout_plan(&self) -> grid::LayoutPlan {
+    fn band_ends(&self) -> Vec<usize> {
+        let total = self.item_count();
+        let mut ends = Vec::new();
+        let pins = self.pin_count();
+        if pins > 0 && pins < total {
+            ends.push(pins);
+        }
+        if self.drilled_session.is_none() {
+            let sessions = self.sessions.len();
+            if sessions > 0 {
+                let session_end = pins + sessions;
+                if session_end < total {
+                    ends.push(session_end);
+                }
+            }
+        }
+        ends
+    }
+
+    pub(crate) fn current_layout_plan(&self) -> grid::LayoutPlan {
         let (rows, cols) = self.viewport.unwrap_or((1, 1));
         self.layout_plan(Rect::new(
             0,
@@ -842,10 +870,7 @@ impl Overview {
                 let title_width = Line::from(self.item_title(index).unwrap_or("")).width();
                 let active_width = usize::from(self.item_is_active(index)) * 2;
                 let previous_width = usize::from(self.is_previous_item(index)) * 4;
-                let session_width = self
-                    .item_tab_count(index)
-                    .map(|count| SESSION_MARK_WIDTH + 2 + count.to_string().len())
-                    .unwrap_or(0);
+                let session_width = usize::from(self.item_is_session(index)) * SESSION_MARK_WIDTH;
                 let pin_width = usize::from(self.item_is_pinned(index)) * PIN_MARK_WIDTH;
                 let pin_session_width = self
                     .item_pin_session(index)
@@ -1084,6 +1109,18 @@ impl Overview {
             hint.jump_prefix.clear();
         }
         self.recompute_hint_labels();
+        let sole_match = self.hint.as_ref().and_then(|hint| {
+            let matched: Vec<usize> = hint
+                .labels
+                .iter()
+                .enumerate()
+                .filter_map(|(index, label)| label.as_ref().map(|_| index))
+                .collect();
+            (matched.len() == 1).then_some(matched[0])
+        });
+        if let Some(index) = sole_match {
+            return self.commit_index(index);
+        }
         if let Some(first_match) = self
             .hint
             .as_ref()
@@ -1186,751 +1223,4 @@ pub fn display_name(tab: &TabFact) -> &str {
         return "untitled";
     }
     name
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tab(id: usize, position: usize, name: &str, active: bool) -> TabFact {
-        TabFact {
-            id,
-            position,
-            name: name.to_owned(),
-            active,
-        }
-    }
-
-    #[test]
-    fn enter_commits_cursor_tab() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![
-            tab(10, 0, "ww", false),
-            tab(11, 1, "feat/geo-db", true),
-            tab(12, 2, "notes", false),
-        ]);
-        overview.reset_cursor_to_active();
-        assert_eq!(overview.cursor(), 1);
-        assert_eq!(
-            overview.decide(Key::Confirm),
-            Action::Commit { tab_index: 1 }
-        );
-    }
-
-    #[test]
-    fn previous_tab_delegates_to_host_history() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(10, 0, "ww", true)]);
-        assert_eq!(overview.decide(Key::PreviousTab), Action::PreviousTab);
-    }
-
-    #[test]
-    fn previous_tab_is_identified_by_stable_tab_id() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![
-            tab(10, 0, "current", true),
-            tab(11, 1, "previous", false),
-        ]);
-        overview.set_previous_tab_id(Some(11));
-        assert!(!overview.is_previous_tab(0));
-        assert!(overview.is_previous_tab(1));
-    }
-
-    #[test]
-    fn navigation_uses_the_rendered_responsive_grid() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(
-            (0..8)
-                .map(|position| {
-                    tab(
-                        position,
-                        position,
-                        &format!("tab-{position}"),
-                        position == 0,
-                    )
-                })
-                .collect(),
-        );
-        overview.set_viewport(7, 80);
-        overview.decide(Key::Down);
-        assert_eq!(overview.cursor(), 1);
-    }
-
-    #[test]
-    fn scrolling_stops_at_both_ends_and_keeps_the_camera_on_the_cursor() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(
-            (0..20)
-                .map(|position| {
-                    tab(
-                        position,
-                        position,
-                        &format!("tab-{position}"),
-                        position == 0,
-                    )
-                })
-                .collect(),
-        );
-        overview.set_viewport(6, 12);
-
-        overview.decide(Key::Left);
-        overview.decide(Key::Up);
-        overview.decide(Key::HalfPageUp);
-        assert_eq!(overview.cursor(), 0);
-        assert_eq!(overview.current_layout_plan().first_visible, 0);
-
-        overview.decide(Key::Last);
-        overview.decide(Key::Right);
-        overview.decide(Key::Down);
-        overview.decide(Key::HalfPageDown);
-        assert_eq!(overview.cursor(), 19);
-        let plan = overview.current_layout_plan();
-        assert!(overview.cursor() >= plan.first_visible);
-        assert!(overview.cursor() < plan.visible_end());
-    }
-
-    #[test]
-    fn scrolling_keeps_the_moved_cursor_visible() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(
-            (0..20)
-                .map(|position| {
-                    tab(
-                        position,
-                        position,
-                        &format!("tab-{position}"),
-                        position == 0,
-                    )
-                })
-                .collect(),
-        );
-        overview.set_viewport(6, 12);
-        for _ in 0..5 {
-            overview.decide(Key::Down);
-        }
-        let plan = overview.current_layout_plan();
-        assert_eq!(overview.cursor(), 5);
-        assert_eq!(plan.first_visible, 1);
-        assert!(overview.cursor() < plan.visible_end());
-    }
-
-    #[test]
-    fn vim_page_keys_scroll_by_half_and_full_viewports() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(
-            (0..20)
-                .map(|position| {
-                    tab(
-                        position,
-                        position,
-                        &format!("tab-{position}"),
-                        position == 0,
-                    )
-                })
-                .collect(),
-        );
-        overview.set_viewport(6, 12);
-        overview.decide(Key::HalfPageDown);
-        assert_eq!(overview.cursor(), 2);
-        overview.decide(Key::PageDown);
-        assert_eq!(overview.cursor(), 7);
-        overview.decide(Key::HalfPageUp);
-        assert_eq!(overview.cursor(), 5);
-        overview.decide(Key::PageUp);
-        assert_eq!(overview.cursor(), 0);
-    }
-
-    #[test]
-    fn vim_gg_and_uppercase_g_jump_to_the_ends() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(
-            (0..20)
-                .map(|position| {
-                    tab(
-                        position,
-                        position,
-                        &format!("tab-{position}"),
-                        position == 0,
-                    )
-                })
-                .collect(),
-        );
-        overview.decide(Key::Last);
-        assert_eq!(overview.cursor(), 19);
-        overview.decide(Key::GoPrefix);
-        overview.decide(Key::GoPrefix);
-        assert_eq!(overview.cursor(), 0);
-    }
-
-    #[test]
-    fn vim_z_commands_align_the_cursor_in_the_scroll_viewport() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(
-            (0..20)
-                .map(|position| {
-                    tab(
-                        position,
-                        position,
-                        &format!("tab-{position}"),
-                        position == 0,
-                    )
-                })
-                .collect(),
-        );
-        overview.set_viewport(6, 12);
-        overview.decide(Key::PageDown);
-        overview.decide(Key::PageDown);
-        assert_eq!(overview.cursor(), 10);
-
-        overview.decide(Key::ZPrefix);
-        overview.decide(Key::AlignTop);
-        assert_eq!(overview.current_layout_plan().first_visible, 10);
-
-        overview.decide(Key::ZPrefix);
-        overview.decide(Key::ZPrefix);
-        assert_eq!(overview.current_layout_plan().first_visible, 8);
-
-        overview.decide(Key::ZPrefix);
-        overview.decide(Key::AlignBottom);
-        assert_eq!(overview.current_layout_plan().first_visible, 6);
-    }
-
-    #[test]
-    fn help_overlay_is_closed_before_the_overview() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
-        assert_eq!(overview.decide(Key::ToggleHelp), Action::None);
-        assert!(overview.is_help_visible());
-        assert_eq!(overview.decide(Key::Dismiss), Action::None);
-        assert!(!overview.is_help_visible());
-        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
-    }
-
-    #[test]
-    fn flash_reveals_an_offscreen_match_without_moving_cursor() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(
-            (0..20)
-                .map(|position| {
-                    let name = if position == 19 {
-                        "zebra".to_owned()
-                    } else {
-                        format!("tab-{position}")
-                    };
-                    tab(position, position, &name, position == 0)
-                })
-                .collect(),
-        );
-        overview.set_viewport(6, 12);
-        overview.decide(Key::StartHint);
-        overview.decide(Key::Input('z'));
-        let plan = overview.current_layout_plan();
-        assert_eq!(overview.cursor(), 0);
-        assert_eq!(plan.first_visible, 15);
-        assert_eq!(overview.hint_label(19), Some("a"));
-    }
-
-    #[test]
-    fn esc_dismisses_without_commit() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "ww", true)]);
-        overview.decide(Key::Right);
-        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
-    }
-
-    #[test]
-    fn cursor_follows_tab_id_after_reorder() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(10, 0, "a", true), tab(11, 1, "b", false)]);
-        overview.decide(Key::Right);
-        assert_eq!(overview.tabs()[overview.cursor()].id, 11);
-        overview.apply_tabs(vec![tab(11, 0, "b", false), tab(10, 1, "a", true)]);
-        assert_eq!(overview.tabs()[overview.cursor()].id, 11);
-        assert_eq!(overview.cursor(), 0);
-    }
-
-    #[test]
-    fn missing_cursor_tab_snaps_to_active() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(10, 0, "a", false), tab(11, 1, "b", true)]);
-        overview.decide(Key::Right);
-        overview.apply_tabs(vec![tab(10, 0, "a", false)]);
-        assert_eq!(overview.cursor(), 0);
-    }
-
-    #[test]
-    fn default_tab_name_is_preserved() {
-        let tab = tab(1, 2, "Tab #3", true);
-        assert_eq!(display_name(&tab), "Tab #3");
-    }
-
-    #[test]
-    fn search_then_tip_commits_without_confirmation() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![
-            tab(10, 0, "notes", true),
-            tab(11, 1, "Feature/Geo-DB", false),
-        ]);
-        overview.decide(Key::StartHint);
-        assert_eq!(overview.hint_label(0), None);
-        assert_eq!(overview.decide(Key::Input('g')), Action::None);
-        assert_eq!(overview.hint_query(), "g");
-        assert_eq!(overview.hint_match_range(1), Some((8, 1)));
-        assert_eq!(overview.cursor(), 0);
-        let label = overview.hint_label(1).unwrap().to_owned();
-        assert_eq!(
-            overview.decide(Key::Input(label.chars().next().unwrap())),
-            Action::Commit { tab_index: 1 }
-        );
-    }
-
-    #[test]
-    fn two_character_tips_narrow_then_commit() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(
-            (0..52)
-                .map(|position| {
-                    tab(
-                        position,
-                        position,
-                        &format!("tab-{position}"),
-                        position == 0,
-                    )
-                })
-                .collect(),
-        );
-        overview.decide(Key::StartHint);
-        assert_eq!(overview.decide(Key::Input('t')), Action::None);
-        let label = overview.hint_label(27).unwrap().to_owned();
-        assert_eq!(label.len(), 2);
-        let mut chars = label.chars();
-        assert_eq!(
-            overview.decide(Key::Input(chars.next().unwrap())),
-            Action::None
-        );
-        assert_eq!(
-            overview.decide(Key::Input(chars.next().unwrap())),
-            Action::Commit { tab_index: 27 }
-        );
-    }
-
-    #[test]
-    fn invalid_search_key_keeps_current_query() {
-        let mut overview = Overview::new();
-        overview.apply_tabs((0..52).map(|i| tab(i, i, "tab", i == 0)).collect());
-        overview.decide(Key::StartHint);
-        overview.decide(Key::Input('t'));
-        assert_eq!(overview.decide(Key::Input('!')), Action::None);
-        assert_eq!(overview.hint_query(), "t");
-    }
-
-    #[test]
-    fn first_hint_character_always_builds_the_query() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(0, 0, "shell", true), tab(1, 1, "notes", false)]);
-        overview.decide(Key::StartHint);
-        assert_eq!(overview.decide(Key::Input('h')), Action::None);
-        assert_eq!(overview.hint_query(), "h");
-        assert_eq!(overview.hint_match_range(0), Some((1, 1)));
-    }
-
-    #[test]
-    fn escape_cancels_hint_before_dismissing() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(10, 0, "notes", true)]);
-        overview.decide(Key::StartHint);
-        assert_eq!(overview.decide(Key::Dismiss), Action::None);
-        assert!(!overview.is_hinting());
-        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
-    }
-
-    fn session(name: &str, current: bool, tab_count: usize) -> SessionFact {
-        SessionFact {
-            name: name.to_owned(),
-            current,
-            tab_count,
-            tabs: (0..tab_count)
-                .map(|position| {
-                    tab(
-                        100 + position,
-                        position,
-                        &format!("{name}-{position}"),
-                        false,
-                    )
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn board_puts_sessions_before_tabs() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
-        assert_eq!(overview.item_count(), 4);
-        assert_eq!(overview.item_title(0), Some("ww"));
-        assert_eq!(overview.item_title(1), Some("lp"));
-        assert_eq!(overview.item_title(2), Some("notes"));
-        assert_eq!(overview.item_title(3), Some("logs"));
-        assert!(overview.item_is_session(0));
-        assert!(!overview.item_is_session(2));
-        overview.reset_cursor_to_active();
-        assert_eq!(overview.cursor(), 2);
-        assert_eq!(
-            overview.decide(Key::Confirm),
-            Action::Commit { tab_index: 0 }
-        );
-    }
-
-    #[test]
-    fn confirm_on_a_session_card_opens_its_tabs() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
-        overview.reset_cursor_to_active();
-        overview.decide(Key::Left);
-        assert_eq!(overview.decide(Key::Confirm), Action::None);
-        assert_eq!(overview.viewing_session(), Some("lp"));
-        assert_eq!(overview.item_count(), 3);
-        assert_eq!(overview.item_title(0), Some("lp-0"));
-        assert!(!overview.item_is_session(0));
-        assert_eq!(
-            overview.decide(Key::Confirm),
-            Action::SwitchSession {
-                name: "lp".into(),
-                tab_position: Some(overview.cursor()),
-            }
-        );
-    }
-
-    #[test]
-    fn flash_tip_on_a_session_opens_its_tabs() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.apply_sessions(vec![session("geo", false, 3), session("notes", true, 1)]);
-        overview.decide(Key::StartHint);
-        assert_eq!(overview.decide(Key::Input('g')), Action::None);
-        let label = overview.hint_label(1).unwrap().to_owned();
-        assert_eq!(
-            overview.decide(Key::Input(label.chars().next().unwrap())),
-            Action::None
-        );
-        assert_eq!(overview.viewing_session(), Some("geo"));
-        assert!(!overview.is_hinting());
-        assert_eq!(overview.item_title(0), Some("geo-0"));
-    }
-
-    #[test]
-    fn pin_moves_a_tab_to_the_front_and_does_not_pin_sessions() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
-        overview.reset_cursor_to_active();
-        assert_eq!(overview.item_title(overview.cursor()), Some("notes"));
-        assert_eq!(overview.decide(Key::Pin), Action::PersistPins);
-        assert_eq!(overview.item_title(0), Some("notes"));
-        assert!(overview.item_is_pinned(0));
-        assert_eq!(overview.item_title(1), Some("ww"));
-        assert_eq!(overview.item_title(3), Some("logs"));
-        assert_eq!(overview.item_count(), 4);
-        overview.decide(Key::Down);
-        assert_eq!(overview.decide(Key::Pin), Action::None);
-        assert_eq!(overview.pins().len(), 1);
-        overview.decide(Key::Up);
-        assert_eq!(overview.decide(Key::Pin), Action::PersistPins);
-        assert!(!overview.item_is_pinned(0));
-        assert_eq!(overview.item_title(2), Some("notes"));
-    }
-
-    #[test]
-    fn pinned_foreign_tab_sits_first_and_jumps() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.apply_pins(vec![Pin {
-            session: "lp".into(),
-            tab_name: "lp-1".into(),
-        }]);
-        assert_eq!(overview.item_title(0), Some("lp-1"));
-        assert!(overview.item_is_pinned(0));
-        assert_eq!(overview.pin_count(), 1);
-        assert_eq!(overview.item_pin_session(0), Some("lp"));
-        assert_eq!(overview.item_title(1), Some("ww"));
-        overview.decide(Key::GoPrefix);
-        overview.decide(Key::GoPrefix);
-        assert_eq!(
-            overview.decide(Key::Confirm),
-            Action::SwitchSession {
-                name: "lp".into(),
-                tab_position: Some(1),
-            }
-        );
-    }
-
-    #[test]
-    fn session_board_only_shows_its_own_pins() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.apply_pins(vec![
-            Pin {
-                session: "ww".into(),
-                tab_name: "notes".into(),
-            },
-            Pin {
-                session: "lp".into(),
-                tab_name: "lp-2".into(),
-            },
-        ]);
-        assert_eq!(overview.item_title(0), Some("notes"));
-        overview.decide(Key::Last);
-        overview.decide(Key::Confirm);
-        assert_eq!(overview.viewing_session(), Some("lp"));
-        assert_eq!(overview.item_title(0), Some("lp-2"));
-        assert!(overview.item_is_pinned(0));
-        assert_eq!(overview.item_title(1), Some("lp-0"));
-        assert_ne!(overview.item_title(0), Some("notes"));
-    }
-
-    #[test]
-    fn unmatched_pins_are_dropped() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("ww", true, 1)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.apply_pins(vec![Pin {
-            session: "gone".into(),
-            tab_name: "old".into(),
-        }]);
-        assert_eq!(overview.item_title(0), Some("ww"));
-        assert!(!overview.item_is_pinned(0));
-        assert!(overview.pins().is_empty());
-        assert!(overview.take_stale_cache().pins);
-    }
-
-    #[test]
-    fn deleted_tab_drops_its_pin() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("ww", true, 2)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
-        overview.apply_pins(vec![Pin {
-            session: "ww".into(),
-            tab_name: "logs".into(),
-        }]);
-        assert_eq!(overview.pins().len(), 1);
-        overview.take_stale_cache();
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        assert!(overview.pins().is_empty());
-        assert!(overview.take_stale_cache().pins);
-    }
-
-    #[test]
-    fn foreign_pin_stays_until_that_session_tabs_are_known() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![SessionFact {
-            name: "lp".into(),
-            current: false,
-            tab_count: 3,
-            tabs: vec![],
-        }]);
-        overview.apply_pins(vec![Pin {
-            session: "lp".into(),
-            tab_name: "lp-2".into(),
-        }]);
-        assert_eq!(overview.pins().len(), 1);
-        overview.apply_sessions(vec![session("lp", false, 3)]);
-        assert_eq!(overview.pins().len(), 1);
-        overview.apply_sessions(vec![session("lp", false, 2)]);
-        assert!(overview.pins().is_empty());
-    }
-
-    #[test]
-    fn stale_previous_and_session_last_are_dropped() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.set_previous_session_name(Some("lp".into()));
-        overview.set_session_last_tab("lp".into(), 2);
-        overview.set_session_last_tab("gone".into(), 0);
-        overview.prune_stale_cache();
-        assert_eq!(overview.session_last_tabs().get("lp"), Some(&2));
-        assert!(!overview.session_last_tabs().contains_key("gone"));
-        overview.apply_sessions(vec![session("ww", true, 1)]);
-        assert!(overview.take_stale_cache().previous);
-        assert!(!overview.session_last_tabs().contains_key("lp"));
-    }
-
-    #[test]
-    fn apply_sessions_replaces_with_the_live_snapshot() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("t", false, 2), session("ww", true, 4)]);
-        overview.apply_sessions(vec![session("ww", true, 5)]);
-        assert_eq!(
-            overview
-                .sessions()
-                .iter()
-                .map(|session| session.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["ww"]
-        );
-        assert_eq!(overview.sessions()[0].tab_count, 5);
-    }
-
-    #[test]
-    fn touch_current_session_keeps_other_live_sessions() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
-        overview.touch_current_session(session("ww", true, 5));
-        assert_eq!(
-            overview
-                .sessions()
-                .iter()
-                .map(|session| (session.name.as_str(), session.tab_count, session.current))
-                .collect::<Vec<_>>(),
-            vec![("ww", 5, true), ("lp", 3, false)]
-        );
-    }
-
-    #[test]
-    fn current_session_board_uses_zellij_previous_tab() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("ww", true, 2)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
-        overview.set_session_last_tab("ww".into(), 0);
-        overview.set_previous_tab_id(Some(2));
-        assert_eq!(overview.decide(Key::Confirm), Action::None);
-        assert_eq!(overview.viewing_session(), Some("ww"));
-        assert!(!overview.is_previous_item(0));
-        assert!(overview.is_previous_item(1));
-    }
-
-    #[test]
-    fn dash_uses_the_previous_tab_after_a_same_session_jump() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
-        overview.set_previous_session_name(Some("lp".into()));
-        overview.set_previous_tab_id(Some(2));
-        overview.set_previous_session_name(None);
-        assert!(!overview.is_previous_item(1));
-        assert!(overview.is_previous_item(3));
-        assert_eq!(overview.decide(Key::PreviousTab), Action::PreviousTab);
-    }
-
-    #[test]
-    fn dash_always_goes_to_the_previous_tab() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("ww", true, 1)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.set_previous_tab_id(Some(1));
-        assert!(!overview.is_previous_item(0));
-        assert!(overview.is_previous_item(1));
-        assert_eq!(overview.decide(Key::PreviousTab), Action::PreviousTab);
-    }
-
-    #[test]
-    fn pinned_previous_tab_keeps_the_dash_mark() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("ww", true, 2)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
-        overview.apply_pins(vec![Pin {
-            session: "ww".into(),
-            tab_name: "logs".into(),
-        }]);
-        overview.set_previous_tab_id(Some(2));
-        assert!(overview.item_is_pinned(0));
-        assert!(overview.is_previous_item(0));
-        assert!(!overview.is_previous_item(1));
-        assert_eq!(overview.item_pin_session(0), None);
-    }
-
-    #[test]
-    fn dash_jumps_a_pinned_previous_session_tab() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.apply_pins(vec![Pin {
-            session: "lp".into(),
-            tab_name: "lp-2".into(),
-        }]);
-        overview.set_previous_session_name(Some("lp".into()));
-        overview.set_session_last_tab("lp".into(), 2);
-        assert_eq!(overview.item_title(0), Some("lp-2"));
-        assert_eq!(overview.item_title(2), Some("lp"));
-        assert!(overview.is_previous_item(0));
-        assert!(!overview.is_previous_item(2));
-        assert_eq!(overview.item_pin_session(0), None);
-        assert_eq!(
-            overview.decide(Key::PreviousTab),
-            Action::SwitchSession {
-                name: "lp".into(),
-                tab_position: Some(2),
-            }
-        );
-    }
-
-    #[test]
-    fn dash_returns_to_the_previous_session_after_a_jump() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 2)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.set_previous_session_name(Some("lp".into()));
-        overview.set_previous_tab_id(Some(1));
-        assert!(overview.is_previous_item(1));
-        assert!(!overview.is_previous_item(0));
-        assert!(!overview.is_previous_item(2));
-        assert_eq!(overview.decide(Key::PreviousTab), Action::None);
-        assert_eq!(overview.viewing_session(), Some("lp"));
-        assert_eq!(overview.item_title(0), Some("lp-0"));
-        overview.set_session_last_tab("lp".into(), 2);
-        assert_eq!(
-            overview.decide(Key::PreviousTab),
-            Action::SwitchSession {
-                name: "lp".into(),
-                tab_position: Some(2),
-            }
-        );
-    }
-
-    #[test]
-    fn dash_on_a_session_board_jumps_that_session_last_tab() {
-        let mut overview = Overview::new();
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.set_session_last_tab("lp".into(), 2);
-        overview.reset_cursor_to_active();
-        overview.decide(Key::Left);
-        assert_eq!(overview.decide(Key::Confirm), Action::None);
-        assert_eq!(overview.viewing_session(), Some("lp"));
-        assert!(overview.is_previous_item(2));
-        assert!(!overview.is_previous_item(0));
-        assert_eq!(
-            overview.decide(Key::PreviousTab),
-            Action::SwitchSession {
-                name: "lp".into(),
-                tab_position: Some(2),
-            }
-        );
-    }
-
-    #[test]
-    fn dismiss_from_a_session_board_returns_home() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.apply_sessions(vec![session("lp", false, 3), session("ww", true, 1)]);
-        overview.reset_cursor_to_active();
-        overview.decide(Key::Left);
-        overview.decide(Key::Confirm);
-        assert_eq!(overview.decide(Key::Dismiss), Action::None);
-        assert_eq!(overview.viewing_session(), None);
-        assert_eq!(overview.item_title(0), Some("ww"));
-        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
-    }
-
-    #[test]
-    fn dismiss_closes_from_the_fused_board() {
-        let mut overview = Overview::new();
-        overview.apply_tabs(vec![tab(1, 0, "notes", true)]);
-        overview.apply_sessions(vec![session("ww", true, 1)]);
-        assert_eq!(overview.decide(Key::Dismiss), Action::Dismiss);
-    }
 }
