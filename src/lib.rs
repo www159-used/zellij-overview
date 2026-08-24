@@ -309,7 +309,12 @@ impl Overview {
     }
 
     fn pin_is_dead(&self, pin: &Pin) -> bool {
-        if self.current_session_name() == Some(pin.session.as_str()) && !self.tabs.is_empty() {
+        if self.current_session_name() == Some(pin.session.as_str()) {
+            // Only TabUpdate is complete for the current session. A session
+            // snapshot often arrives first with a partial tab list.
+            if self.tabs.is_empty() {
+                return false;
+            }
             return self
                 .tabs
                 .iter()
@@ -322,7 +327,7 @@ impl Overview {
         {
             None => !self.sessions.is_empty(),
             Some(session) => {
-                if session.tabs.is_empty() {
+                if session.tabs.is_empty() || session.tabs.len() < session.tab_count {
                     return false;
                 }
                 session

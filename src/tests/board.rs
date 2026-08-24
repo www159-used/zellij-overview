@@ -103,6 +103,23 @@ fn session_board_only_shows_its_own_pins() {
 }
 
 #[test]
+fn current_session_pin_survives_a_partial_session_snapshot() {
+    let mut overview = Overview::new();
+    overview.apply_sessions(vec![SessionFact {
+        name: "ww".into(),
+        current: true,
+        tab_count: 2,
+        tabs: vec![tab(1, 0, "notes", true)],
+    }]);
+    overview.apply_pins(vec![pin("ww", "logs")]);
+    assert_eq!(overview.pins().len(), 1);
+    assert!(!overview.take_stale_cache().pins);
+    overview.apply_tabs(vec![tab(1, 0, "notes", true), tab(2, 1, "logs", false)]);
+    assert_eq!(overview.pins().len(), 1);
+    assert!(overview.item_is_pinned(0));
+}
+
+#[test]
 fn unmatched_pins_are_dropped() {
     let mut overview = Overview::new();
     overview.apply_sessions(vec![session("ww", true, 1)]);
@@ -142,6 +159,20 @@ fn foreign_pin_stays_until_that_session_tabs_are_known() {
     assert_eq!(overview.pins().len(), 1);
     overview.apply_sessions(vec![session("lp", false, 2)]);
     assert!(overview.pins().is_empty());
+}
+
+#[test]
+fn foreign_pin_survives_a_short_tab_list_when_count_says_more() {
+    let mut overview = Overview::new();
+    overview.apply_sessions(vec![SessionFact {
+        name: "lp".into(),
+        current: false,
+        tab_count: 3,
+        tabs: vec![tab(100, 0, "lp-0", false)],
+    }]);
+    overview.apply_pins(vec![pin("lp", "lp-2")]);
+    assert_eq!(overview.pins().len(), 1);
+    assert!(!overview.take_stale_cache().pins);
 }
 
 #[test]

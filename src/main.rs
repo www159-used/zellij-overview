@@ -551,10 +551,11 @@ fn read_session_last_tabs() -> Vec<(String, usize)> {
 
 fn session_fact(session: SessionInfo) -> SessionFact {
     let tabs: Vec<TabFact> = session.tabs.into_iter().map(tab_fact).collect();
+    let tab_count = session.panes.panes.len().max(tabs.len());
     SessionFact {
         name: session.name,
         current: session.is_current_session,
-        tab_count: tabs.len(),
+        tab_count,
         tabs,
     }
 }
