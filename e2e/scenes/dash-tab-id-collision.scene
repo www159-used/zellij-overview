@@ -1,0 +1,16 @@
+# 外 session 钉的 tab id 与当前 previous 撞车时，只能有一个 [-]。
+
+session ww current
+session lp twin
+tabs notes*
+
+focus lp
+jump
+pin twin
+key esc
+
+tabs id=1:notes* id=100:logs
+previous-tab 100
+
+expect
+previous logs

@@ -281,9 +281,11 @@ fn dash_jumps_a_pinned_previous_session_tab() {
     overview.set_previous_session_name(Some("lp".into()));
     overview.set_session_last_tab("lp".into(), 2);
     assert_eq!(overview.item_title(0), Some("lp-2"));
-    assert_eq!(overview.item_title(2), Some("lp"));
+    assert_eq!(overview.item_title(1), Some("ww"));
+    assert_eq!(overview.item_title(2), Some("notes"));
+    assert_eq!(overview.item_count(), 3);
     assert!(overview.is_previous_item(0));
-    assert!(!overview.is_previous_item(2));
+    assert!(!overview.is_previous_item(1));
     assert_eq!(overview.item_pin_session(0), None);
     assert_eq!(
         overview.decide(Key::PreviousTab),

@@ -1,0 +1,19 @@
+session ww current notes logs
+tabs notes* logs
+pin logs
+
+expect
+pins ww/logs
+action persist-pins
+
+snapshot
+session ww current count=2 notes
+
+expect
+pins ww/logs
+
+tabs notes* logs
+
+expect
+pins ww/logs
+titles logs,ww,notes

@@ -1,0 +1,18 @@
+# 钉着的上次 tab 带着 [-] 时，所属 session 卡不画。
+
+session ww current notes
+session lp a b c
+tabs notes*
+
+focus lp
+jump
+pin c
+key esc
+
+previous-session lp
+session-last lp 2
+
+expect
+previous c
+titles c,ww,notes
+pins lp/c

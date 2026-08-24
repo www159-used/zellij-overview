@@ -355,6 +355,8 @@ impl State {
             return;
         };
         self.fetched_sessions = true;
+        // Keep this order in lockstep with `Host::load_from_snapshot`
+        // (session snapshot, then `/cache/pins`, then persist).
         self.overview.apply_sessions(
             snapshot
                 .live_sessions

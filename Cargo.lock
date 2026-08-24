@@ -2785,6 +2785,7 @@ dependencies = [
 name = "zellij-overview"
 version = "0.5.2"
 dependencies = [
+ "crossterm",
  "ratatui",
  "zellij-tile",
 ]

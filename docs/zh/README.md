@@ -88,12 +88,20 @@ Zellij 的浮动层是整层显隐的。打开 overview 时，藏着的其它浮
 cargo fmt --check
 cargo lint
 # 测核心行为，不要加 wasm target
-cargo test --lib   # cargo t
+cargo test --lib   # cargo t（含 e2e/scenes）
+cargo e2e          # 只跑 host 场景
+cargo run --bin overview-tui -- pin logs
+cargo run --bin overview-tui -- focus logs jump
+cargo run --bin overview-tui -- --replay e2e/scenes/pin-partial-open.scene
+cargo run --features tui --bin overview-tui   # cargo tui
+./scripts/e2e-zellij.sh
 cargo wasm
 zellij -l zellij.kdl
 ```
 
-测试走 `Overview::decide`（`Key` 进，`Action` 出）。跳转、Flash、一块板、钉、`-` 在 `src/tests/`。布局、渲染、配色、用量、浮窗尺寸跟各自模块。`src/main.rs` 只是把 Zellij 事件接到这层接口，不做单测。
+`Overview::decide`（`Key` 进，`Action` 出）在 `src/tests/`。布局、渲染、配色、用量、浮窗尺寸跟各自模块。
+
+`e2e/scenes/` 是 host 场景：按插件打开的顺序喂事件（先 session 快照，再 `/cache/pins`，再 TabUpdate），期望写在场景里。钉走和按 `p` 同一条路（场景里 `pin logs`，或 `overview-tui pin logs`），不往假盘里塞。`focus logs` / `jump` 是选中和按 `e`，期望写 `focused` / `action`。带 `[-]` 的外 session 钉会藏掉对应 session 卡（`pin-previous-hides-session.scene`）。`overview-tui --replay` 不用 TTY；`--features tui` 是同一块板的本机交互。`./scripts/e2e-zellij.sh` 在一次性 session 里加载 WASM，Zellij 版本一变先在这里露馅。没装 `zellij` 就跳过；要强制失败就设 `OVERVIEW_E2E_ZELLIJ_REQUIRED=1`。
 
 开发布局加载的是 `target/wasm32-wasip1/release/zellij-overview.wasm`。颜色在 `src/theme.css`，编进插件。改色不用重编：拷到插件的 `/cache/theme.css`，重开 overview。关掉时会在 `/cache/usage.jsonl` 记一条本机用量，`./scripts/usage-summary.sh` 可以汇总。
 

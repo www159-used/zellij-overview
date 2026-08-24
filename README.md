@@ -91,12 +91,20 @@ Zellij shows or hides the floating layer as a whole. Opening overview also revea
 cargo fmt --check
 cargo lint
 # Core behavior; do not use the WASM target
-cargo test --lib   # cargo t
+cargo test --lib   # cargo t (includes e2e/scenes)
+cargo e2e          # host scenes only
+cargo run --bin overview-tui -- pin logs
+cargo run --bin overview-tui -- focus logs jump
+cargo run --bin overview-tui -- --replay e2e/scenes/pin-partial-open.scene
+cargo run --features tui --bin overview-tui   # cargo tui
+./scripts/e2e-zellij.sh
 cargo wasm
 zellij -l zellij.kdl
 ```
 
-Tests sit on `Overview::decide` (`Key` in, `Action` out). Jump, Flash, the board, pins, and `-` live under `src/tests/`. Grid, render, theme, usage, and float size keep tests next to the module. The WASM host in `src/main.rs` is not unit-tested: it only maps Zellij events onto that interface.
+`Overview::decide` tests (`Key` in, `Action` out) live under `src/tests/`. Grid, render, theme, usage, and float size keep tests next to the module.
+
+Host scenes in `e2e/scenes/` replay the plugin open order (session snapshot, then `/cache/pins`, then TabUpdate) against a board you write. Pins go through the same `p` path as the CLI (`pin logs`, or `overview-tui pin logs`), not a seeded pin file. `focus logs` / `jump` are the cursor and `e`; expect with `focused` / `action`. A foreign pin that already carries `[-]` hides that session card (`pin-previous-hides-session.scene`). `overview-tui --replay` runs those without a TTY; `--features tui` is the same board on a real terminal. `./scripts/e2e-zellij.sh` loads the WASM in a throwaway Zellij session — that is the check that moves when Zellij's host API does. Skip it only if `zellij` is not installed; set `OVERVIEW_E2E_ZELLIJ_REQUIRED=1` to fail instead.
 
 The development layout loads `target/wasm32-wasip1/release/zellij-overview.wasm`. Colors live in `src/theme.css`. Defaults are compiled in. To change colors without rebuilding, copy that file to the plugin `/cache/theme.css` and reopen overview. Closing overview appends one local line to `/cache/usage.jsonl`. Summarize with `./scripts/usage-summary.sh`.
 

@@ -1,4 +1,6 @@
 [alias]
 lint = "clippy --lib --all-targets -- -D warnings"
 t = "test --lib"
-wasm = "build --target wasm32-wasip1 --release"
+e2e = "test --lib scenes_in_e2e"
+tui = "run --features tui --bin overview-tui"
+wasm = "build --target wasm32-wasip1 --release --bin zellij-overview"

@@ -4,7 +4,11 @@ mod ansi;
 mod float_size;
 mod floating_state;
 mod grid;
+#[cfg(not(target_family = "wasm"))]
+mod host;
 mod render;
+#[cfg(not(target_family = "wasm"))]
+mod scene;
 mod theme;
 mod usage;
 
@@ -17,8 +21,12 @@ use std::collections::BTreeMap;
 
 pub use float_size::{float_size_from_config, FloatSize};
 pub use floating_state::FloatingLayerState;
+#[cfg(not(target_family = "wasm"))]
+pub use host::Host;
 use ratatui::{layout::Rect, text::Line};
 pub use render::{paint, Frame};
+#[cfg(not(target_family = "wasm"))]
+pub use scene::{run_scene, SceneError};
 pub use theme::{apply_theme_overlay, PACKED_THEME_CSS};
 pub use usage::{append_usage_log, Usage, UsageEnd, USAGE_CAP};
 
@@ -251,10 +259,12 @@ impl Overview {
 
     pub fn set_previous_session_name(&mut self, name: Option<String>) {
         self.previous_session_name = name.filter(|name| !name.is_empty());
+        self.clamp_cursor();
     }
 
     pub fn set_session_last_tab(&mut self, session: String, position: usize) {
         self.session_last_tabs.insert(session, position);
+        self.clamp_cursor();
     }
 
     pub fn apply_pins(&mut self, pins: Vec<Pin>) {
@@ -405,12 +415,56 @@ impl Overview {
         self.ensure_index_visible(self.cursor);
     }
 
+    pub fn set_cursor(&mut self, index: usize) {
+        if self.item_count() == 0 {
+            return;
+        }
+        self.cursor = index.min(self.item_count() - 1);
+        self.ensure_index_visible(self.cursor);
+    }
+
+    fn clamp_cursor(&mut self) {
+        if self.item_count() == 0 {
+            self.cursor = 0;
+            return;
+        }
+        if self.cursor >= self.item_count() {
+            self.cursor = self.item_count() - 1;
+        }
+    }
+
+    pub(crate) fn find_tab(&self, title: &str, session: Option<&str>) -> Option<usize> {
+        self.find_item(title, session, true)
+    }
+
+    pub(crate) fn find_item(
+        &self,
+        title: &str,
+        session: Option<&str>,
+        tabs_only: bool,
+    ) -> Option<usize> {
+        let matches: Vec<usize> = (0..self.item_count())
+            .filter(|&index| {
+                if self.item_title(index) != Some(title) {
+                    return false;
+                }
+                if tabs_only && self.item_is_session(index) {
+                    return false;
+                }
+                match session {
+                    None => true,
+                    Some(name) if self.item_is_session(index) => title == name,
+                    Some(name) => self.item_session_name(index) == Some(name),
+                }
+            })
+            .collect();
+        (matches.len() == 1).then_some(matches[0])
+    }
+
     pub fn is_previous_item(&self, index: usize) -> bool {
         if let Some(name) = self.drilled_session.as_deref() {
             if self.drilled_session_is_current() {
-                return self
-                    .tab_at(index)
-                    .is_some_and(|tab| Some(tab.id) == self.previous_tab_id);
+                return self.is_current_session_previous_tab(index);
             }
             return self.session_last_tabs.get(name).is_some_and(|position| {
                 self.tab_at(index)
@@ -425,8 +479,19 @@ impl Overview {
                 .session_at(index)
                 .is_some_and(|session| session.name == name);
         }
-        self.tab_at(index)
-            .is_some_and(|tab| Some(tab.id) == self.previous_tab_id)
+        self.is_current_session_previous_tab(index)
+    }
+
+    /// `previous_tab_id` is from the current session's history. Tab ids collide
+    /// across sessions, so foreign pins must not pick it up.
+    fn is_current_session_previous_tab(&self, index: usize) -> bool {
+        let Some(id) = self.previous_tab_id else {
+            return false;
+        };
+        if self.item_session_name(index) != self.current_session_name() {
+            return false;
+        }
+        self.tab_at(index).is_some_and(|tab| tab.id == id)
     }
 
     pub fn is_previous_tab(&self, index: usize) -> bool {
@@ -692,6 +757,29 @@ impl Overview {
         })
     }
 
+    fn pin_covers_previous_session(&self, session: &str) -> bool {
+        let Some(position) = self.session_last_tabs.get(session).copied() else {
+            return false;
+        };
+        self.pins.iter().any(|pin| {
+            pin.session == session
+                && self
+                    .resolve_pin(pin)
+                    .is_some_and(|tab| tab.position == position)
+        })
+    }
+
+    fn session_hidden_by_previous_pin(&self, session_index: usize) -> bool {
+        let Some(session) = self.sessions.get(session_index) else {
+            return false;
+        };
+        if session.current {
+            return false;
+        }
+        self.previous_session_name.as_deref() == Some(session.name.as_str())
+            && self.pin_covers_previous_session(&session.name)
+    }
+
     fn other_previous_session(&self) -> Option<&str> {
         let name = self.previous_session_name.as_deref()?;
         self.sessions
@@ -812,7 +900,9 @@ impl Overview {
             ends.push(pins);
         }
         if self.drilled_session.is_none() {
-            let sessions = self.sessions.len();
+            let sessions = (pins..total)
+                .take_while(|&index| self.item_is_session(index))
+                .count();
             if sessions > 0 {
                 let session_end = pins + sessions;
                 if session_end < total {
@@ -947,7 +1037,7 @@ impl Overview {
         }
     }
 
-    fn item_session_name(&self, index: usize) -> Option<&str> {
+    pub(crate) fn item_session_name(&self, index: usize) -> Option<&str> {
         match self.slot(index)? {
             Slot::Pin(pin) => Some(self.pins[pin].session.as_str()),
             Slot::Session(session) => Some(self.sessions[session].name.as_str()),
@@ -971,6 +1061,10 @@ impl Overview {
             }
         }
         for index in 0..self.sessions.len() {
+            // Pin that already carries [-] replaces its session card.
+            if self.session_hidden_by_previous_pin(index) {
+                continue;
+            }
             slots.push(Slot::Session(index));
         }
         let current = self.current_session_name().unwrap_or("");

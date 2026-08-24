@@ -8,6 +8,10 @@ license = "MIT"
 [dependencies]
 ratatui = { version = "0.30.2", default-features = false }
 zellij-tile = "0.44"
+crossterm = { version = "0.28", optional = true }
+
+[features]
+tui = ["dep:crossterm"]
 
 [lib]
 path = "src/lib.rs"
@@ -15,6 +19,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "zellij-overview"
 path = "src/main.rs"
+test = false
+doctest = false
+
+[[bin]]
+name = "overview-tui"
+path = "src/bin/overview_tui.rs"
 test = false
 doctest = false
 

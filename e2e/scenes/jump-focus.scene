@@ -1,0 +1,20 @@
+session ww current notes logs
+session lp git feat
+tabs notes* logs
+
+expect
+focused notes
+
+focus logs
+jump
+
+expect
+focused logs
+action commit 1
+
+focus lp
+jump
+
+expect
+viewing lp
+action none
