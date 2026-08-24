@@ -14,9 +14,11 @@
   --pin-mark: #f9a9b6;
   --pin-border: #f192a1;
 
-  /* Flash：匹配字、候选框 */
+  /* Flash：匹配字、候选框、未命中遮罩 */
   --match: #ebbb8b;
   --match-border: #cba77d;
+  --mask: #161a22;
+  --mask-fg: #3d4454;
 
   /* 普通 tab 框 */
   --card-border: #61687c;

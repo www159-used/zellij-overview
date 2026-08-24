@@ -16,6 +16,8 @@ pub struct Theme {
     pub pin_border: Color,
     pub match_fg: Color,
     pub match_border: Color,
+    pub mask: Color,
+    pub mask_fg: Color,
     pub card_border: Color,
     pub separator: Color,
     pub tip_fg: Color,
@@ -51,6 +53,8 @@ impl Theme {
             pin_border: try_color(vars, "pin-border")?,
             match_fg: try_color(vars, "match")?,
             match_border: try_color(vars, "match-border")?,
+            mask: try_color(vars, "mask")?,
+            mask_fg: try_color(vars, "mask-fg")?,
             card_border: try_color(vars, "card-border")?,
             separator: try_color(vars, "separator")?,
             tip_fg: try_color(vars, "tip-fg")?,
@@ -165,6 +169,8 @@ mod tests {
         assert_eq!(theme.tip_typed, theme.focus);
         assert_eq!(theme.separator, theme.card_border);
         assert_eq!(theme.focus_fill, Color::Rgb(0x3a, 0x2f, 0x52));
+        assert_eq!(theme.mask, Color::Rgb(0x16, 0x1a, 0x22));
+        assert_eq!(theme.mask_fg, Color::Rgb(0x3d, 0x44, 0x54));
     }
 
     #[test]

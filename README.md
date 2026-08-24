@@ -61,7 +61,7 @@ The footer shows the common keys. Press `?` inside overview for the full help.
 
 <img src="asset/flash.gif" alt="Flash search: type log, then the tip to jump" width="720">
 
-Press `s`, type part of a title. One match jumps immediately. Several matches show a tip — press it (such as `a`) to jump. Example: `log` then the tip lands on `logs`. `Esc` leaves search. A tip on a session card opens that session's tab board.
+Press `s`, type part of a title. One match jumps immediately. Several matches show a tip — press it (such as `a`) to jump. Cards that miss the query sink into a backdrop. Example: `log` then the tip lands on `logs`. `Esc` leaves search. A tip on a session card opens that session's tab board.
 
 ### Another session's tabs
 

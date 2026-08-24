@@ -66,19 +66,27 @@ fn render_cards(overview: &Overview, area: Rect, buffer: &mut Buffer) {
     }
 
     let plan = overview.layout_plan(area);
+    let masking = overview.is_hinting() && !overview.hint_query().is_empty();
+    if masking {
+        buffer.set_style(area, Style::default().bg(theme().mask));
+    }
     for card in &plan.cards {
         render_card(overview, card.index, card.area, plan.mode, buffer);
     }
-    render_separators(&plan, area, buffer);
+    render_separators(&plan, area, masking, buffer);
     render_scroll_indicators(&plan, overview.item_count(), area, buffer);
 }
 
-fn render_separators(plan: &LayoutPlan, area: Rect, buffer: &mut Buffer) {
+fn render_separators(plan: &LayoutPlan, area: Rect, masking: bool, buffer: &mut Buffer) {
     if area.width == 0 {
         return;
     }
     let line = "─".repeat(usize::from(area.width));
-    let style = Style::default().fg(theme().separator);
+    let style = Style::default().fg(if masking {
+        theme().mask_fg
+    } else {
+        theme().separator
+    });
     for &y in &plan.separators {
         if y < area.y || y >= area.y.saturating_add(area.height) {
             continue;
@@ -129,6 +137,8 @@ fn render_card(
     let title = overview.item_title(index).unwrap_or("");
     let match_range = overview.hint_match_range(index);
     let candidate = match_range.is_some() && !overview.hint_query().is_empty();
+    let masked = overview.is_hinting() && !overview.hint_query().is_empty() && !candidate;
+    let mute = if masked { Some(theme().mask_fg) } else { None };
     let mut spans = Vec::new();
     if mode == LayoutMode::Scroll
         && overview.viewing_session().is_none()
@@ -148,50 +158,62 @@ fn render_card(
     if overview.item_is_session(index) {
         spans.push(Span::styled(
             SESSION_MARK,
-            Style::default().fg(theme().session),
+            Style::default().fg(mute.unwrap_or(theme().session)),
         ));
     }
     if overview.item_is_pinned(index) {
         spans.push(Span::styled(
             "* ",
             Style::default()
-                .fg(theme().pin_mark)
+                .fg(mute.unwrap_or(theme().pin_mark))
                 .add_modifier(Modifier::BOLD),
         ));
     }
     if overview.item_is_active(index) {
-        spans.push(Span::styled("● ", Style::default().fg(theme().focus)));
+        spans.push(Span::styled(
+            "● ",
+            Style::default().fg(mute.unwrap_or(theme().focus)),
+        ));
     }
     if overview.is_previous_item(index) {
         spans.push(Span::styled(
             "[-] ",
             Style::default()
-                .fg(theme().tip_bg)
+                .fg(mute.unwrap_or(theme().tip_bg))
                 .add_modifier(Modifier::BOLD),
         ));
     }
     if overview.is_hinting() {
-        spans.extend(highlighted_title(
-            title,
-            match_range.filter(|_| candidate),
-            overview.hint_label(index),
-            overview.hint_jump_prefix().len(),
-        ));
+        if masked {
+            spans.push(Span::styled(title, Style::default().fg(theme().mask_fg)));
+        } else {
+            spans.extend(highlighted_title(
+                title,
+                match_range.filter(|_| candidate),
+                overview.hint_label(index),
+                overview.hint_jump_prefix().len(),
+            ));
+        }
     } else {
         spans.push(Span::raw(title));
     }
     if let Some(session) = overview.item_pin_session(index) {
         spans.push(Span::styled(
             format!("  {session}"),
-            Style::default().fg(theme().pin_border),
+            Style::default().fg(mute.unwrap_or(theme().pin_border)),
         ));
     }
     let text_area = match mode {
         LayoutMode::Framed => {
             let focused = overview.cursor() == index;
             let box_area = framed_box_area(area);
+            if candidate {
+                buffer.set_style(area, Style::default().bg(Color::Reset));
+            }
             let border_color = if candidate {
                 theme().match_border
+            } else if masked {
+                theme().mask_fg
             } else if overview.item_is_pinned(index) {
                 theme().pin_border
             } else if overview.item_is_session(index) {
@@ -204,8 +226,17 @@ fn render_card(
                 .border_style(Style::default().fg(border_color));
             let inner = block.inner(box_area);
             block.render(box_area, buffer);
-            buffer.set_style(inner, Style::default().fg(CARD_FOREGROUND));
-            if focused {
+            buffer.set_style(
+                inner,
+                Style::default().fg(CARD_FOREGROUND).bg(if candidate {
+                    Color::Reset
+                } else if masked {
+                    theme().mask
+                } else {
+                    Color::Reset
+                }),
+            );
+            if focused && !masked {
                 draw_focus_corners(area, buffer);
             }
             Rect::new(
@@ -517,7 +548,7 @@ mod tests {
             TabFact {
                 id: 2,
                 position: 1,
-                name: "feat/geo-db".into(),
+                name: "ww".into(),
                 active: false,
             },
             TabFact {
@@ -543,10 +574,12 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         render_cards(&overview, area, &mut buffer);
         let plan = overview.layout_plan(area);
-        let second = framed_box_area(plan.cards[1].area);
-        assert_eq!(buffer[(second.x, second.y)].fg, theme().match_border);
-        assert_eq!(buffer[(second.x, second.y)].bg, Color::Reset);
-        assert_eq!(buffer[(second.x + 1, second.y + 1)].bg, Color::Reset);
+        let hit = framed_box_area(plan.cards[0].area);
+        let missed = framed_box_area(plan.cards[1].area);
+        assert_eq!(buffer[(hit.x, hit.y)].fg, theme().match_border);
+        assert_eq!(buffer[(hit.x + 1, hit.y + 1)].bg, Color::Reset);
+        assert_eq!(buffer[(missed.x, missed.y)].fg, theme().mask_fg);
+        assert_eq!(buffer[(missed.x + 1, missed.y + 1)].bg, theme().mask);
     }
 
     #[test]
