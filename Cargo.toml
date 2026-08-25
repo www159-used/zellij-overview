@@ -1,6 +1,6 @@
 [package]
 name = "zellij-overview"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 description = "Flash-style tab switcher for Zellij"
 license = "MIT"
