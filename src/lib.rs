@@ -10,6 +10,7 @@ mod render;
 #[cfg(not(target_family = "wasm"))]
 mod scene;
 mod theme;
+mod toggle;
 mod usage;
 
 #[cfg(test)]
@@ -28,6 +29,7 @@ pub use render::{paint, Frame};
 #[cfg(not(target_family = "wasm"))]
 pub use scene::{run_scene, SceneError};
 pub use theme::{apply_theme_overlay, PACKED_THEME_CSS};
+pub use toggle::{closes_the_board, duplicate_close_ids, now_ms};
 pub use usage::{append_usage_log, Usage, UsageEnd, USAGE_CAP};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

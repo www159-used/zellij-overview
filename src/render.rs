@@ -66,14 +66,14 @@ fn render_cards(overview: &Overview, area: Rect, buffer: &mut Buffer) {
     }
 
     let plan = overview.layout_plan(area);
-    let masking = overview.is_hinting() && !overview.hint_query().is_empty();
-    if masking {
+    let hinting = overview.is_hinting();
+    if hinting {
         buffer.set_style(area, Style::default().bg(theme().mask));
     }
     for card in &plan.cards {
         render_card(overview, card.index, card.area, plan.mode, buffer);
     }
-    render_separators(&plan, area, masking, buffer);
+    render_separators(&plan, area, hinting, buffer);
     render_scroll_indicators(&plan, overview.item_count(), area, buffer);
 }
 
@@ -118,7 +118,7 @@ fn render_help(area: Rect, buffer: &mut Buffer) {
         Line::from("p                   pin or unpin a tab"),
         Line::from("-                   previous tab or session last tab"),
         Line::from("q / Esc / ?         back or close / close help"),
-        Line::from("Ctrl+y              toggle overview (global)"),
+        Line::from("Alt+y               toggle overview (global)"),
     ];
     Paragraph::new(lines).render(inner, buffer);
 }
@@ -437,7 +437,7 @@ fn render_footer(overview: &Overview, area: Rect, buffer: &mut Buffer) {
                     .fg(theme().tip_typed)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Esc cancel", Style::default().fg(theme().mask_fg)),
         ])
     } else {
         let mut spans = Vec::new();
@@ -533,6 +533,35 @@ mod tests {
             buffer[(plan.cards[1].area.x, plan.cards[1].area.y)].symbol(),
             " "
         );
+    }
+
+    #[test]
+    fn entering_flash_tints_the_pane() {
+        let browse = paint(&overview(), 12, 40).lines.join("\n");
+        assert!(
+            !browse.contains(&bg_sgr(theme().mask)),
+            "browse must not already be the flash tint:\n{browse}"
+        );
+
+        let mut overview = overview();
+        overview.decide(Key::StartHint);
+        let flash = paint(&overview, 12, 40).lines.join("\n");
+        assert!(
+            flash.contains("FLASH"),
+            "footer still names the mode:\n{flash}"
+        );
+        assert!(
+            flash.contains(&bg_sgr(theme().mask)),
+            "empty flash must still tint the pane:\n{flash}"
+        );
+
+        let area = Rect::new(0, 0, 40, 11);
+        let mut buffer = Buffer::empty(area);
+        render_cards(&overview, area, &mut buffer);
+        let plan = overview.layout_plan(area);
+        let first = framed_box_area(plan.cards[0].area);
+        assert_eq!(buffer[(first.x, first.y)].fg, theme().card_border);
+        assert_eq!(buffer[(first.x + 1, first.y + 1)].bg, Color::Reset);
     }
 
     #[test]

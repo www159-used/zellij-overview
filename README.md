@@ -4,7 +4,7 @@ English · [中文](docs/zh/README.md)
 
 Browse and switch Zellij sessions and tabs from a floating window.
 
-Press `Ctrl+y` to open. Pinned tabs sit on their own band, then session cards, then the current session's unpinned tabs. `e` or a Flash tip on a session opens that session's tab board; press again on a tab to jump. Tabs in the current session can be jumped from the home board. Press `s` to search the titles on the current board.
+Press `Alt+y` to open. Pinned tabs sit on their own band, then session cards, then the current session's unpinned tabs. `e` or a Flash tip on a session opens that session's tab board; press again on a tab to jump. Tabs in the current session can be jumped from the home board. Press `s` to search the titles on the current board.
 
 <img src="asset/open.gif" alt="Open overview on the session and tab board" width="720">
 
@@ -42,16 +42,17 @@ Use a `file:` URL, not a plugin alias, so instance identity stays consistent.
 
 ```kdl
 shared {
-    bind "Ctrl y" {
+    bind "Alt y" {
         LaunchPlugin "file:~/.config/zellij/plugins/zellij-overview.wasm" {
             floating true
-            skip_plugin_cache true
         }
     }
 }
 ```
 
-On first launch Zellij asks for permission to read and change session state. Allow it. Press `Ctrl+y` again to close overview.
+Omit `skip_plugin_cache` for daily use — with it set, Zellij force-recompiles the WASM on every open (about a second of lag). Only add `skip_plugin_cache true` while developing, or use `zellij action start-or-reload-plugin` after a rebuild.
+
+On first launch Zellij asks for permission to read and change session state. Allow it. Press `Alt+y` again to close overview.
 
 ## Usage
 

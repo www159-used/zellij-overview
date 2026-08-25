@@ -4,7 +4,7 @@
 
 Zellij 里用来跳 session、跳 tab 的浮动窗口。
 
-`Ctrl+y` 打开。上面是钉着的 tab，中间是各个 session，下面是当前 session 里没钉的 tab。在 session 上按 `e`（或 Flash 给的字母）先进它的 tab 列表，再按一次才真的跳过去。当前 session 的 tab 不用钻，直接跳。项多了按 `s` 搜标题。
+`Alt+y` 打开。上面是钉着的 tab，中间是各个 session，下面是当前 session 里没钉的 tab。在 session 上按 `e`（或 Flash 给的字母）先进它的 tab 列表，再按一次才真的跳过去。当前 session 的 tab 不用钻，直接跳。项多了按 `s` 搜标题。
 
 <img src="../../asset/open.gif" alt="打开 overview" width="720">
 
@@ -39,16 +39,17 @@ cd zellij-overview
 
 ```kdl
 shared {
-    bind "Ctrl y" {
+    bind "Alt y" {
         LaunchPlugin "file:~/.config/zellij/plugins/zellij-overview.wasm" {
             floating true
-            skip_plugin_cache true
         }
     }
 }
 ```
 
-第一次打开会要权限，允许就行。再按一次 `Ctrl+y` 关掉。
+日常不要加 `skip_plugin_cache`：开了之后每次打开都会强制重编译 WASM，大约卡一秒。只有开发热更新时才加 `skip_plugin_cache true`，或者改完用 `zellij action start-or-reload-plugin` 重载。
+
+第一次打开会要权限，允许就行。再按一次 `Alt+y` 关掉。
 
 ## 怎么跳
 

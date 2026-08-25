@@ -3,9 +3,9 @@ use std::fs;
 use std::path::Path;
 
 use zellij_overview::{
-    append_usage_log, apply_theme_overlay, float_size_from_config, Action, FloatSize,
-    FloatingLayerState, Key, Overview, Pin, SessionFact, TabFact, Usage, UsageEnd,
-    PACKED_THEME_CSS, USAGE_CAP,
+    append_usage_log, apply_theme_overlay, closes_the_board, duplicate_close_ids,
+    float_size_from_config, now_ms, Action, FloatSize, FloatingLayerState, Key, Overview, Pin,
+    SessionFact, TabFact, Usage, UsageEnd, PACKED_THEME_CSS, USAGE_CAP,
 };
 use zellij_tile::prelude::*;
 
@@ -35,6 +35,7 @@ struct State {
     opening: bool,
     float_size: FloatSize,
     usage: Usage,
+    opened_at_ms: u64,
 }
 
 register_plugin!(State);
@@ -44,6 +45,7 @@ impl ZellijPlugin for State {
         let ids = get_plugin_ids();
         self.own_plugin_id = Some(ids.plugin_id);
         self.client_id = Some(ids.client_id);
+        self.opened_at_ms = now_ms();
         self.pending_initial_cursor = true;
         self.float_size = float_size_from_config(&configuration);
         load_theme_overlay();
@@ -183,27 +185,23 @@ impl State {
         else {
             return;
         };
-        let overview_panes: Vec<PaneId> = manifest
+        let overview_ids: Vec<u32> = manifest
             .panes
             .values()
             .flatten()
-            .filter(|pane| pane.plugin_url.as_deref() == Some(own_url))
-            .map(pane_id)
+            .filter(|pane| pane.is_plugin && pane.plugin_url.as_deref() == Some(own_url))
+            .map(|pane| pane.id)
             .collect();
-        let is_oldest_instance = overview_panes
-            .iter()
-            .filter_map(|pane_id| match pane_id {
-                PaneId::Plugin(id) => Some(*id),
-                PaneId::Terminal(_) => None,
-            })
-            .min()
-            == Some(own_id);
-        if overview_panes.len() > 1 && is_oldest_instance {
+        let close_ids = duplicate_close_ids(own_id, &overview_ids, self.opened_at_ms, now_ms());
+        if close_ids.is_empty() {
+            return;
+        }
+        if closes_the_board(&close_ids, &overview_ids) {
             self.record_usage(UsageEnd::Toggle, false);
             self.restore_floating_layer();
-            for pane_id in overview_panes {
-                close_pane_with_id(pane_id);
-            }
+        }
+        for id in close_ids {
+            close_pane_with_id(PaneId::Plugin(id));
         }
     }
 

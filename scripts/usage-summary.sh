@@ -63,7 +63,7 @@ empty_toggle = sum(
     for row in rows
     if int(row.get("keys") or 0) == 0 and row.get("end") == "toggle"
 )
-print(f"opens  {len(used)} used   {empty_toggle} empty Ctrl+y")
+print(f"opens  {len(used)} used   {empty_toggle} empty Alt+y")
 if not used:
     raise SystemExit(0)
 
@@ -86,7 +86,7 @@ def path(row):
         "tab": "this tab",
         "prev": "previous tab",
         "dismiss": "q/esc",
-        "toggle": "ctrl+y",
+        "toggle": "alt+y",
     }.get(str(row.get("end") or "?"), str(row.get("end")))
     steps.append(end)
     return " → ".join(steps)
